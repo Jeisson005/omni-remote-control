@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 
-	"github.com/Jeisson005/omni-remote-control/clients/linux/internal/executor"
+	"github.com/Jeisson005/omni-remote-control/client-linux/internal/executor"
 )
 
 type GUIController struct {

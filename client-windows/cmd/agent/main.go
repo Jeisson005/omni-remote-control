@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/config"
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/connection"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/config"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/connection"
 )
 
 func main() {

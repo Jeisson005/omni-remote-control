@@ -70,31 +70,30 @@ Para garantizar un monitoreo integral sin saturar la red ni la base de datos, la
 
 ```text
 omni-remote-control/
-├── clients/
-│   ├── linux/                         # Agente para Linux (X11 / Headless)
-│   │   ├── cmd/agent/main.go          # Punto de entrada del agente Linux
-│   │   ├── internal/
-│   │   │   ├── config/                # Configuración y persistencia de Device ID
-│   │   │   ├── sysinfo/               # Telemetría estática (CPU, RAM, kernel, red)
-│   │   │   ├── metrics/               # Telemetría dinámica (CPU%, RAM%, ventanas, procesos)
-│   │   │   ├── executor/              # Ejecutor seguro de comandos shell
-│   │   │   ├── gui/                   # Controlador GUI (xdotool y wmctrl)
-│   │   │   └── connection/            # Cliente WebSocket y reconexión automática
-│   │   ├── install.sh                 # Instalador idempotente (Debian, Ubuntu, Fedora, Arch)
-│   │   ├── Dockerfile.test            # Entorno de pruebas con Xvfb, Openbox y xterm
-│   │   └── entrypoint-test.sh         # Script de inicio para entorno X11 virtual
-│   │
-│   └── windows/                       # Agente para Windows (Win32 nativo)
-│       ├── cmd/agent/main.go          # Punto de entrada del agente Windows
-│       ├── internal/
-│       │   ├── config/                # Configuración y persistencia en ProgramData
-│       │   ├── sysinfo/               # Telemetría estática vía Win32 API
-│       │   ├── metrics/               # Telemetría dinámica (GetSystemTimes, EnumWindows, tasklist)
-│       │   ├── executor/              # Ejecución de PowerShell y cmd.exe
-│       │   ├── win32/                 # Wrappers nativos de user32.dll y kernel32.dll (sin CGO)
-│       │   ├── gui/                   # Control GUI (cursor, clics, unicode typing, ventanas)
-│       │   └── connection/            # Conexión WebSocket al servidor
-│       └── install.ps1                # Instalador idempotente en PowerShell (Scheduled Task)
+├── client-linux/                  # Agente para Linux (X11 / Headless)
+│   ├── cmd/agent/main.go          # Punto de entrada del agente Linux
+│   ├── internal/
+│   │   ├── config/                # Configuración y persistencia de Device ID
+│   │   ├── sysinfo/               # Telemetría estática (CPU, RAM, kernel, red)
+│   │   ├── metrics/               # Telemetría dinámica (CPU%, RAM%, ventanas, procesos)
+│   │   ├── executor/              # Ejecutor seguro de comandos shell
+│   │   ├── gui/                   # Controlador GUI (xdotool y wmctrl)
+│   │   └── connection/            # Cliente WebSocket y reconexión automática
+│   ├── install.sh                 # Instalador idempotente (Debian, Ubuntu, Fedora, Arch)
+│   ├── Dockerfile.test            # Entorno de pruebas con Xvfb, Openbox y xterm
+│   └── entrypoint-test.sh         # Script de inicio para entorno X11 virtual
+│
+├── client-windows/                # Agente para Windows (Win32 nativo)
+│   ├── cmd/agent/main.go          # Punto de entrada del agente Windows
+│   ├── internal/
+│   │   ├── config/                # Configuración y persistencia en ProgramData
+│   │   ├── sysinfo/               # Telemetría estática vía Win32 API
+│   │   ├── metrics/               # Telemetría dinámica (GetSystemTimes, EnumWindows, tasklist)
+│   │   ├── executor/              # Ejecución de PowerShell y cmd.exe
+│   │   ├── win32/                 # Wrappers nativos de user32.dll y kernel32.dll (sin CGO)
+│   │   ├── gui/                   # Control GUI (cursor, clics, unicode typing, ventanas)
+│   │   └── connection/            # Conexión WebSocket al servidor
+│   └── install.ps1                # Instalador idempotente en PowerShell (Scheduled Task)
 │
 ├── server/
 │   ├── cmd/server/main.go             # Punto de entrada del servidor Go
@@ -210,10 +209,10 @@ curl -s -X POST http://localhost:8090/api/v1/mcp/tools/call \
 
 ## 📦 Instalación del Agente en Linux (Idempotente)
 
-El script `clients/linux/install.sh` instala dependencias, configura el servicio y persiste el identificador del dispositivo:
+El script `client-linux/install.sh` instala dependencias, configura el servicio y persiste el identificador del dispositivo:
 
 ```bash
-sudo OMNI_SERVER_URL="ws://<IP_SERVIDOR>:8090/ws/devices" ./clients/linux/install.sh
+sudo OMNI_SERVER_URL="ws://<IP_SERVIDOR>:8090/ws/devices" ./client-linux/install.sh
 ```
 
 El instalador:
@@ -231,14 +230,14 @@ El agente de Windows está desarrollado en Go utilizando llamadas nativas a la A
 
 ### 1. Compilación Cruzada (desde Linux / CI/CD):
 ```bash
-cd clients/windows
+cd client-windows
 GOOS=windows GOARCH=amd64 go build -ldflags="-w -s" -o omni-agent.exe cmd/agent/main.go
 ```
 
 ### 2. Instalación con PowerShell (como Administrador):
 ```powershell
 # Ejecutar en PowerShell con permisos de Administrador:
-.\clients\windows\install.ps1 -ServerUrl "ws://<IP_SERVIDOR>:8090/ws/devices"
+.\client-windows\install.ps1 -ServerUrl "ws://<IP_SERVIDOR>:8090/ws/devices"
 ```
 
 El instalador en PowerShell:

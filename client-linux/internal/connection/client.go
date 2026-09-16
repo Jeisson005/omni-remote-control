@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jeisson005/omni-remote-control/clients/linux/internal/config"
-	"github.com/Jeisson005/omni-remote-control/clients/linux/internal/executor"
-	"github.com/Jeisson005/omni-remote-control/clients/linux/internal/gui"
-	"github.com/Jeisson005/omni-remote-control/clients/linux/internal/metrics"
-	"github.com/Jeisson005/omni-remote-control/clients/linux/internal/sysinfo"
+	"github.com/Jeisson005/omni-remote-control/client-linux/internal/config"
+	"github.com/Jeisson005/omni-remote-control/client-linux/internal/executor"
+	"github.com/Jeisson005/omni-remote-control/client-linux/internal/gui"
+	"github.com/Jeisson005/omni-remote-control/client-linux/internal/metrics"
+	"github.com/Jeisson005/omni-remote-control/client-linux/internal/sysinfo"
 	"github.com/gorilla/websocket"
 )
 

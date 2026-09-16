@@ -6,7 +6,8 @@
 *.dylib
 omni-server
 omni-agent
-/clients/linux/omni-agent
+/client-linux/omni-agent
+/client-windows/omni-agent.exe
 /server/omni-server
 
 # Test and coverage

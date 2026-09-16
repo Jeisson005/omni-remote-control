@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/win32"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/win32"
 )
 
 type WindowInfo struct {

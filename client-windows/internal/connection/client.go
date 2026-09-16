@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/config"
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/executor"
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/gui"
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/metrics"
-	"github.com/Jeisson005/omni-remote-control/clients/windows/internal/sysinfo"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/config"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/executor"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/gui"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/metrics"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/sysinfo"
 	"github.com/gorilla/websocket"
 )
 
