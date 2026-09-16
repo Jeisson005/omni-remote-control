@@ -2,4 +2,5 @@
     <string name="app_name">Omni Agent</string>
     <string name="accessibility_service_label">Omni Remote Accessibility Service</string>
     <string name="accessibility_service_description">Permite la ejecución remota de gestos (clics, deslizamientos), lectura de interfaz y entrada de texto enviadas desde la consola Omni Remote Control.</string>
+    <string name="notification_listener_label">Omni Remote Notification Access</string>
 </resources>

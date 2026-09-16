@@ -58,4 +58,11 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Shizuku (llave maestra con privilegios shell/root: input, pm grant, locksettings)
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+
+    // Almacenamiento cifrado con Android Keystore (patrón de desbloqueo)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

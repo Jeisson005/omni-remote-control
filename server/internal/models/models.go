@@ -17,6 +17,44 @@ type Device struct {
 	SystemInfo  *DeviceSystemInfo `json:"system_info,omitempty"`
 }
 
+type NotificationAction struct {
+	Title string `json:"title"`
+	Index int    `json:"index"`
+}
+
+// NotificationRecord representa una notificación capturada por el
+// NotificationListenerService del cliente Android.
+type NotificationRecord struct {
+	ID          int64                `json:"id,omitempty"`
+	DeviceID    string               `json:"device_id"`
+	ExternalID  string               `json:"external_id"`
+	PackageName string               `json:"package_name"`
+	AppName     string               `json:"app_name,omitempty"`
+	Title       string               `json:"title,omitempty"`
+	Text        string               `json:"text,omitempty"`
+	SubText     string               `json:"sub_text,omitempty"`
+	Category    string               `json:"category,omitempty"`
+	IsOngoing   bool                 `json:"is_ongoing"`
+	IsClearable bool                 `json:"is_clearable"`
+	Actions     []NotificationAction `json:"actions,omitempty"`
+	PostedAt    time.Time            `json:"posted_at"`
+	ReceivedAt  time.Time            `json:"received_at"`
+}
+
+// SmsMessage representa un SMS entrante o saliente del dispositivo.
+type SmsMessage struct {
+	ID         int64     `json:"id,omitempty"`
+	DeviceID   string    `json:"device_id"`
+	ExternalID string    `json:"external_id"`
+	Direction  string    `json:"direction"` // "inbound", "outbound"
+	Address    string    `json:"address"`
+	Body       string    `json:"body"`
+	Person     string    `json:"person,omitempty"`
+	Read       bool      `json:"read"`
+	Timestamp  time.Time `json:"timestamp"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
 type DeviceSystemInfo struct {
 	DeviceID       string    `json:"device_id"`
 	CPUModel       string    `json:"cpu_model"`
@@ -33,6 +71,7 @@ type DeviceSystemInfo struct {
 	PublicIP       string    `json:"public_ip,omitempty"`
 	NetworkName    string    `json:"network_name,omitempty"`
 	UptimeSeconds  uint64    `json:"uptime_seconds,omitempty"`
+	ControlMode    string    `json:"control_mode,omitempty"` // "consent" (default), "auto"
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -90,7 +129,7 @@ type Command struct {
 }
 
 type WSMessage struct {
-	Type      string          `json:"type"` // "register", "telemetry", "event", "command_request", "command_response", "ping", "pong"
+	Type      string          `json:"type"` // "register", "telemetry", "event", "command_request", "command_response", "fcm_token", "notification", "sms", "notifications_sync", "sms_sync", "ping", "pong"
 	DeviceID  string          `json:"device_id,omitempty"`
 	CommandID string          `json:"command_id,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`

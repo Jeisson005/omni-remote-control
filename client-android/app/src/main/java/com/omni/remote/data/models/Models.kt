@@ -47,6 +47,7 @@ data class DeviceSystemInfo(
     @SerializedName("public_ip") val publicIp: String? = null,
     @SerializedName("network_name") val networkName: String? = null,
     @SerializedName("uptime_seconds") val uptimeSeconds: Long? = null,
+    @SerializedName("control_mode") val controlMode: String? = null,
     @SerializedName("updated_at") val updatedAt: String
 )
 
@@ -84,4 +85,37 @@ data class WSMessage(
     @SerializedName("device_id") val deviceId: String? = null,
     @SerializedName("command_id") val commandId: String? = null,
     @SerializedName("payload") val payload: Any? = null
+)
+
+data class NotificationAction(
+    @SerializedName("title") val title: String,
+    @SerializedName("index") val index: Int
+)
+
+data class NotificationRecord(
+    @SerializedName("device_id") val deviceId: String,
+    @SerializedName("external_id") val externalId: String,
+    @SerializedName("package_name") val packageName: String,
+    @SerializedName("app_name") val appName: String? = null,
+    @SerializedName("title") val title: String = "",
+    @SerializedName("text") val text: String = "",
+    @SerializedName("sub_text") val subText: String? = null,
+    @SerializedName("category") val category: String? = null,
+    @SerializedName("is_ongoing") val isOngoing: Boolean = false,
+    @SerializedName("is_clearable") val isClearable: Boolean = true,
+    @SerializedName("actions") val actions: List<NotificationAction> = emptyList(),
+    @SerializedName("posted_at") val postedAt: String,
+    @SerializedName("received_at") val receivedAt: String
+)
+
+data class SmsMessage(
+    @SerializedName("device_id") val deviceId: String,
+    @SerializedName("external_id") val externalId: String,
+    @SerializedName("direction") val direction: String = "inbound",
+    @SerializedName("address") val address: String,
+    @SerializedName("body") val body: String,
+    @SerializedName("person") val person: String? = null,
+    @SerializedName("read") val read: Boolean = false,
+    @SerializedName("timestamp") val timestamp: String,
+    @SerializedName("received_at") val receivedAt: String
 )

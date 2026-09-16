@@ -253,13 +253,126 @@ curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
   -d '{ "type": "gui_screenshot" }' | python3 -m json.tool
 ```
 
+### 8. Notificaciones de Android (NotificationListenerService)
+
+Consulta las notificaciones capturadas de otras apps (WhatsApp, correo, bancos, etc.):
+
+```bash
+# Historial almacenado en base de datos
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/notifications?limit=50" | python3 -m json.tool
+
+# Lectura EN VIVO (despierta el dispositivo vía FCM y lee las notificaciones activas)
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/notifications/live" | python3 -m json.tool
+```
+
+Ejecutar un botón de acción de una notificación (por ejemplo "Responder" o "Marcar como leído"):
+
+```bash
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/notifications/action" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "<NOTIFICATION_KEY (campo external_id)>",
+    "action_index": 0,
+    "reply_text": "Respuesta opcional para RemoteInput"
+  }' | python3 -m json.tool
+```
+
+### 9. SMS de Android (interceptor + historial + envío)
+
+```bash
+# SMS entrantes reenviados por el BroadcastReceiver (historial en BD)
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/sms?limit=50" | python3 -m json.tool
+
+# Lectura EN VIVO de la bandeja de entrada (READ_SMS, despierta vía FCM)
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/sms/live" | python3 -m json.tool
+
+# Enviar un SMS desde el dispositivo remoto (SEND_SMS)
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/sms" \
+  -H "Content-Type: application/json" \
+  -d '{ "address": "+573001234567", "body": "Hola desde Omni Remote" }' | python3 -m json.tool
+```
+
+### 10. Ingesta directa de notificaciones y SMS (Doze-friendly)
+
+Los clientes Android reenvían automáticamente los eventos capturados aunque no haya sesión WebSocket activa:
+
+```bash
+curl -s -X POST http://localhost:8090/api/v1/notifications \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": "android-mi-dispositivo",
+    "external_id": "0|com.whatsapp|1234|null|10123",
+    "package_name": "com.whatsapp",
+    "app_name": "WhatsApp",
+    "title": "Contacto",
+    "text": "Hola, ¿cómo estás?",
+    "posted_at": "2026-09-16T12:00:00.000Z",
+    "received_at": "2026-09-16T12:00:01.000Z"
+  }' | python3 -m json.tool
+
+curl -s -X POST http://localhost:8090/api/v1/sms \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": "android-mi-dispositivo",
+    "external_id": "sms-+573001234567-1758024000000-12345",
+    "direction": "inbound",
+    "address": "+573001234567",
+    "body": "Mensaje recibido",
+    "timestamp": "2026-09-16T12:00:00.000Z",
+    "received_at": "2026-09-16T12:00:01.000Z"
+  }' | python3 -m json.tool
+```
+
+### 11. Modo de Control y Desbloqueo (Android)
+
+```bash
+# Consultar el estado de bloqueo/capacidades de un dispositivo
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
+  -H "Content-Type: application/json" \
+  -d '{ "type": "get_lock_state" }' | python3 -m json.tool
+
+# Despertar / desbloquear / bloquear la pantalla
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/wake"
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/unlock"
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/lock"
+
+# Cambiar el modo de control (auto/consent) — requiere allow_remote_mode_change en el dispositivo
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/mode" \
+  -H "Content-Type: application/json" -d '{ "mode": "auto" }'
+
+# Conceder/revocar un permiso peligroso de forma silenciosa vía Shizuku
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/permissions" \
+  -H "Content-Type: application/json" \
+  -d '{ "package": "com.example.app", "permission": "android.permission.CAMERA", "grant": true }'
+
+# Registrar token FCM desde el dispositivo (lo hace el agente automáticamente)
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/fcm-token" \
+  -H "Content-Type: application/json" -d '{ "token": "<FCM_TOKEN>" }'
+```
+
+#### Modos de control
+
+- **`consent` (por defecto):** toda toma de control remota muestra una notificación con **Permitir / Denegar**. El dispositivo no abre sesión hasta que el usuario acepta.
+- **`auto`:** control totalmente desatendido (opt-in explícito en la app, con advertencia).
+
+#### Estrategias de desbloqueo (Android)
+
+| Estrategia | Cómo funciona | Requisitos | Guarda credencial |
+|---|---|---|---|
+| **Device Owner** | `setKeyguardDisabled(true)` | App provisionada como Device Owner (`adb shell dpm set-device-owner`) | No |
+| **Shizuku keyguard** | `locksettings set-disabled true` | Shizuku activo con shell/root | No |
+| **Patrón local** | Reproduce el patrón con `input swipe` | Shizuku activo | Sí (cifrado, solo local) |
+| **Ninguna** | Despierta y descarta keyguard no seguro | — | No |
+
+> **Seguridad:** el PIN/patrón se guarda **solo en el dispositivo** con `EncryptedSharedPreferences` (Android Keystore), nunca se envía al servidor ni se registra en logs. El desbloqueo por `input` de un keyguard seguro es **best-effort** y depende del OEM/versión y de la calibración de coordenadas del patrón.
+
 ---
 
 ## 🤖 Integración con Model Context Protocol (MCP)
 
 El servidor expone herramientas para agentes de Inteligencia Artificial (Claude, Antigravity, Cursor, etc.):
 
-- `GET /api/v1/mcp/tools`: Lista las herramientas disponibles (`list_devices`, `get_device_telemetry`, `get_device_events`, `execute_shell_command`, `control_gui`, `get_device_screenshot`).
+- `GET /api/v1/mcp/tools`: Lista las herramientas disponibles (`list_devices`, `get_device_telemetry`, `get_device_events`, `execute_shell_command`, `control_gui`, `get_device_screenshot`, `get_device_notifications`, `get_device_sms`, `send_device_sms`, `notification_action`, `unlock_device`, `lock_device`, `wake_device`, `grant_device_permission`, `set_device_control_mode`).
 - `POST /api/v1/mcp/tools/call`: Ejecución directa de herramientas por parte de agentes IA.
 
 Ejemplo de llamada MCP (Consultar eventos de dispositivo):
@@ -368,6 +481,35 @@ Ubicado en `client-android/`, desarrollado en **Kotlin nativo** con un enfoque d
 
 4. **Watchdog de Inactividad (60 Segundos)**:
    - Si no se reciben órdenes durante 60 segundos (o si se envía `action: "STOP"`), la sesión WebSocket se desconecta, se libera el `WakeLock` y el dispositivo vuelve al modo Doze.
+
+5. **Lectura de Notificaciones con `NotificationListenerService`**:
+   - Captura en tiempo real título, texto completo, subtexto, paquete, app, categoría y botones de acción de **cualquier** aplicación.
+   - Expone las notificaciones activas bajo demanda (comando `get_notifications`) y permite ejecutar botones de acción (`notification_action`), incluidas respuestas por `RemoteInput`.
+   - Requiere el permiso manual **Ajustes > Notificaciones > Acceso a notificaciones** (se solicita desde la app con el botón "Habilitar").
+
+6. **Interceptor y Gestión de SMS**:
+   - `BroadcastReceiver` (`SmsReceiver`) intercepta los SMS entrantes vía `RECEIVE_SMS` en el momento exacto en que llegan al módem, combinando mensajes multiparte y reenviándolos al servidor.
+   - Historial completo de la bandeja de entrada vía `READ_SMS` (`content://sms/inbox`, comando `get_sms`).
+   - Envío de SMS vía `SEND_SMS` (comando `send_sms`).
+   - Requiere permisos de runtime, solicitados desde la app con el botón "Solicitar".
+
+7. **Reenvío Robusto (Doze-friendly) y Despertador FCM**:
+   - Cada notificación/SMS se persiste en una cola local (`omni_pending_sync.json`) y se intenta entregar de inmediato por HTTP POST.
+   - Lo que no se logra entregar se vacía al abrir sesión WebSocket o al ejecutarse el worker de telemetría.
+   - El servidor usa **FCM (HTTP v1)** para despertar al dispositivo y abrir una sesión cuando se solicita lectura en vivo.
+
+### Configuración de FCM en el servidor (opcional)
+
+Para habilitar el despertador remoto, exporta las credenciales de una cuenta de servicio de Firebase antes de iniciar el servidor:
+
+```bash
+export FCM_CREDENTIALS_JSON="/ruta/a/service-account.json"  # o el JSON embebido como string
+export FCM_PROJECT_ID="mi-proyecto-firebase"
+```
+
+Si FCM no está configurado, el servidor sigue funcionando: las lecturas "live" solo funcionarán si el dispositivo ya tiene una sesión abierta.
+
+> Nota: para que el cliente Android reciba los push FCM debes colocar tu `google-services.json` en `client-android/app/` y aplicar el plugin `com.google.gms.google-services` en `client-android/app/build.gradle.kts`.
 
 ### Compilación y Despliegue de Android:
 ```bash

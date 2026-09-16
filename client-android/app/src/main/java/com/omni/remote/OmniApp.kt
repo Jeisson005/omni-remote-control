@@ -8,6 +8,8 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.omni.remote.services.ConsentNotifier
+import com.omni.remote.services.ShizukuManager
 import com.omni.remote.workers.TelemetryWorker
 import java.util.concurrent.TimeUnit
 
@@ -16,6 +18,8 @@ class OmniApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Initializing OmniApp...")
+        ShizukuManager.init(this)
+        ConsentNotifier.ensureChannel(this)
         scheduleTelemetry(this)
     }
 

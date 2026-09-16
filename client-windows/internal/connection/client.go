@@ -14,6 +14,7 @@ import (
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/executor"
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/gui"
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/metrics"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/overlay"
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/sysinfo"
 	"github.com/gorilla/websocket"
 )
@@ -30,6 +31,7 @@ type AgentClient struct {
 	gui       *gui.WindowsGUIController
 	collector *metrics.WindowsCollector
 	monitor   *events.WindowsMonitor
+	overlay   *overlay.SessionOverlay
 	conn      *websocket.Conn
 	connMu    sync.Mutex
 	stopChan  chan struct{}
@@ -42,6 +44,7 @@ func NewAgentClient(cfg *config.Config) *AgentClient {
 		gui:       gui.NewGUIController(),
 		collector: metrics.NewCollector(),
 		monitor:   mon,
+		overlay:   overlay.NewSessionOverlay(),
 		stopChan:  make(chan struct{}),
 	}
 	mon.AddListener(func(ev *events.DeviceEvent) {
@@ -52,6 +55,7 @@ func NewAgentClient(cfg *config.Config) *AgentClient {
 
 func (a *AgentClient) Start(ctx context.Context) {
 	log.Printf("Starting Omni Windows Agent for device: %s (%s)", a.cfg.DeviceID, a.cfg.DeviceName)
+	defer a.overlay.Close()
 
 	for {
 		select {
@@ -229,6 +233,7 @@ func (a *AgentClient) handleServerMessage(msg *WSMessage) {
 		var output, errMsg string
 
 		if strings.HasPrefix(cmdReq.Type, "gui_") {
+			a.overlay.NotifyActivity()
 			action := strings.TrimPrefix(cmdReq.Type, "gui_")
 			res := a.gui.ExecuteGUIAction(action, cmdReq.Payload)
 			exitCode = res.ExitCode

@@ -8,6 +8,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.omni.remote.data.local.OmniStore
 import com.omni.remote.data.models.Command
 import com.omni.remote.data.models.Device
 import com.omni.remote.data.models.DeviceEvent
@@ -34,6 +35,8 @@ class ControlSessionManager private constructor(private val context: Context) {
     private var webSocket: WebSocket? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var isSessionActive = false
+    private var sessionApproved = false
+    private var pendingControlReason: String? = null
 
     private val inactivityRunnable = Runnable {
         Log.i(TAG, "Inactivity watchdog triggered (60s without commands). Stopping session to conserve battery...")
@@ -54,12 +57,36 @@ class ControlSessionManager private constructor(private val context: Context) {
             return
         }
 
+        val remoteTriggered = reason.startsWith("fcm") || reason == "server_request"
+        if (prefs.controlMode == PreferencesManager.CONTROL_MODE_CONSENT && remoteTriggered && !sessionApproved) {
+            Log.i(TAG, "Consent mode active: requesting user approval before starting session ($reason).")
+            pendingControlReason = reason
+            ConsentNotifier.show(context, reason)
+            return
+        }
+
         Log.i(TAG, "Starting remote control session (reason: $reason)...")
         acquireWakeLock()
         isSessionActive = true
         resetInactivityWatchdog()
 
         connectWebSocket()
+    }
+
+    @Synchronized
+    fun approveControlRequest() {
+        Log.i(TAG, "Control request approved by user.")
+        sessionApproved = true
+        pendingControlReason = null
+        startSession("consent_approved")
+    }
+
+    @Synchronized
+    fun denyControlRequest() {
+        Log.i(TAG, "Control request denied by user.")
+        sessionApproved = false
+        pendingControlReason = null
+        // Sin sesión no es posible notificar al servidor; se registra localmente.
     }
 
     @Synchronized
@@ -79,6 +106,8 @@ class ControlSessionManager private constructor(private val context: Context) {
         } finally {
             webSocket = null
             isSessionActive = false
+            // En modo consentimiento, cada nueva sesión remota requiere aprobación.
+            sessionApproved = false
             releaseWakeLock()
         }
     }
@@ -95,6 +124,8 @@ class ControlSessionManager private constructor(private val context: Context) {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "WebSocket connected successfully to Omni Server")
                 sendRegistration()
+                sendFcmToken()
+                sendPendingSync()
                 sendEvent("client_started", "info", "Cliente Android conectado a sesión de control remoto")
                 resetInactivityWatchdog()
             }
@@ -133,6 +164,11 @@ class ControlSessionManager private constructor(private val context: Context) {
                     val payloadJson = gson.toJson(rawMsg["payload"])
                     val command: Command = gson.fromJson(payloadJson, Command::class.java)
 
+                    // Comandos nativos de Android (notificaciones / SMS)
+                    if (handleAndroidCommand(commandId, command)) {
+                        return
+                    }
+
                     // Ejecutar a través del Servicio de Accesibilidad
                     val service = OmniAccessibilityService.instance
                     if (service == null) {
@@ -151,6 +187,180 @@ class ControlSessionManager private constructor(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error handling incoming WS message: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Ejecuta comandos nativos de Android que no dependen del servicio de
+     * accesibilidad: lectura de notificaciones, historial de SMS, envío de SMS
+     * y ejecución de acciones de notificación.
+     *
+     * @return true si el comando fue gestionado aquí.
+     */
+    private fun handleAndroidCommand(commandId: String, command: Command): Boolean {
+        when (command.type) {
+            "get_notifications" -> {
+                val limit = (command.payload["limit"] as? Number)?.toInt() ?: 50
+                val listener = OmniNotificationListenerService.instance
+                if (listener == null) {
+                    sendResponse(commandId, 1, "", "Notification listener service is not enabled or connected")
+                } else {
+                    sendResponse(commandId, 0, listener.getActiveNotificationsJson(limit), null)
+                }
+                return true
+            }
+
+            "get_sms" -> {
+                val limit = (command.payload["limit"] as? Number)?.toInt() ?: 50
+                if (!OmniSmsManager.hasReadPermission(context)) {
+                    sendResponse(commandId, 1, "", "READ_SMS permission not granted")
+                } else {
+                    val messages = OmniSmsManager.readInbox(context, limit)
+                    sendResponse(commandId, 0, gson.toJson(messages), null)
+                }
+                return true
+            }
+
+            "send_sms" -> {
+                val address = command.payload["address"] as? String ?: ""
+                val body = command.payload["body"] as? String ?: ""
+                val result = OmniSmsManager.send(context, address, body)
+                sendResponse(commandId, if (result.success) 0 else 1, result.message, if (result.success) null else result.message)
+                return true
+            }
+
+            "notification_action" -> {
+                val key = command.payload["key"] as? String ?: ""
+                val actionIndex = (command.payload["action_index"] as? Number)?.toInt() ?: 0
+                val replyText = command.payload["reply_text"] as? String
+                val listener = OmniNotificationListenerService.instance
+                if (listener == null) {
+                    sendResponse(commandId, 1, "", "Notification listener service is not enabled or connected")
+                } else {
+                    val result = listener.triggerAction(key, actionIndex, replyText)
+                    sendResponse(commandId, if (result.success) 0 else 1, result.message, if (result.success) null else result.message)
+                }
+                return true
+            }
+
+            "get_lock_state" -> {
+                val state = mapOf(
+                    "locked" to DeviceUnlockManager.isLocked(context),
+                    "secure" to DeviceUnlockManager.isSecure(context),
+                    "shizuku_available" to ShizukuManager.isAvailable(),
+                    "shizuku_granted" to ShizukuManager.hasPermission(),
+                    "device_owner" to DevicePolicyHelper.isDeviceOwner(context)
+                )
+                sendResponse(commandId, 0, gson.toJson(state), null)
+                return true
+            }
+
+            "wake_device" -> {
+                val result = DeviceUnlockManager.wake(context)
+                sendResponse(commandId, if (result.success) 0 else 1, result.message, if (result.success) null else result.message)
+                return true
+            }
+
+            "unlock_device" -> {
+                val result = DeviceUnlockManager.unlock(context)
+                sendResponse(commandId, if (result.success) 0 else 1, result.message, if (result.success) null else result.message)
+                return true
+            }
+
+            "lock_device" -> {
+                val result = DeviceUnlockManager.lock(context)
+                sendResponse(commandId, if (result.success) 0 else 1, result.message, if (result.success) null else result.message)
+                return true
+            }
+
+            "set_keyguard_disabled" -> {
+                val enabled = (command.payload["enabled"] as? Boolean) ?: false
+                val result = DeviceUnlockManager.setKeyguardDisabled(context, enabled)
+                sendResponse(commandId, if (result.success) 0 else 1, result.message, if (result.success) null else result.message)
+                return true
+            }
+
+            "grant_permission", "revoke_permission" -> {
+                val pkg = command.payload["package"] as? String ?: ""
+                val permission = command.payload["permission"] as? String ?: ""
+                if (pkg.isBlank() || permission.isBlank()) {
+                    sendResponse(commandId, 1, "", "package and permission are required")
+                } else {
+                    val verb = if (command.type == "grant_permission") "grant" else "revoke"
+                    val result = ShizukuManager.exec("pm $verb $pkg $permission")
+                    sendResponse(commandId, if (result.success) 0 else 1, result.describe(), if (result.success) null else result.describe())
+                }
+                return true
+            }
+
+            "set_control_mode" -> {
+                val requested = command.payload["mode"] as? String ?: ""
+                if (!prefs.allowRemoteModeChange) {
+                    sendResponse(commandId, 1, "", "Remote control-mode change is disabled on device")
+                } else if (requested != PreferencesManager.CONTROL_MODE_AUTO &&
+                    requested != PreferencesManager.CONTROL_MODE_CONSENT) {
+                    sendResponse(commandId, 1, "", "Invalid mode: $requested")
+                } else {
+                    prefs.controlMode = requested
+                    sendResponse(commandId, 0, "Control mode set to $requested", null)
+                }
+                return true
+            }
+
+            else -> return false
+        }
+    }
+
+    /**
+     * Envía el token FCM al servidor para permitir despertar el dispositivo
+     * vía push cuando está en Doze.
+     */
+    fun sendFcmToken() {
+        val token = prefs.fcmToken
+        if (token.isNullOrEmpty()) {
+            Log.d(TAG, "No FCM token available to send yet.")
+            return
+        }
+        val msg = WSMessage(
+            type = "fcm_token",
+            deviceId = prefs.deviceId,
+            payload = mapOf("token" to token)
+        )
+        webSocket?.send(gson.toJson(msg))
+        Log.d(TAG, "FCM token sent to server.")
+    }
+
+    /**
+     * Vacía la cola local de notificaciones y SMS pendientes sobre la sesión
+     * WebSocket activa. El servidor deduplica por (`device_id`, `external_id`).
+     */
+    fun sendPendingSync() {
+        try {
+            val store = OmniStore.getInstance(context)
+            val notifications = store.notifications()
+            val sms = store.sms()
+
+            if (notifications.isNotEmpty()) {
+                webSocket?.send(gson.toJson(mapOf(
+                    "type" to "notifications_sync",
+                    "device_id" to prefs.deviceId,
+                    "payload" to mapOf("notifications" to notifications)
+                )))
+                store.removeNotifications(notifications.map { it.externalId })
+                Log.i(TAG, "Flushed ${notifications.size} pending notifications over WS.")
+            }
+
+            if (sms.isNotEmpty()) {
+                webSocket?.send(gson.toJson(mapOf(
+                    "type" to "sms_sync",
+                    "device_id" to prefs.deviceId,
+                    "payload" to mapOf("messages" to sms)
+                )))
+                store.removeSms(sms.map { it.externalId })
+                Log.i(TAG, "Flushed ${sms.size} pending SMS over WS.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error flushing pending notifications/SMS: ${e.message}", e)
         }
     }
 
@@ -221,6 +431,7 @@ class ControlSessionManager private constructor(private val context: Context) {
             macAddress = "02:00:00:00:00:00",
             timezone = TimeZone.getDefault().id,
             agentVersion = "v0.1.0",
+            controlMode = prefs.controlMode,
             updatedAt = sdf.format(Date())
         )
 

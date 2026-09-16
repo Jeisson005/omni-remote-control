@@ -109,6 +109,39 @@ func (d *DB) migrate() error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_device_events_device_time ON device_events(device_id, created_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS notifications (
+			id BIGSERIAL PRIMARY KEY,
+			device_id VARCHAR(128) REFERENCES devices(id) ON DELETE CASCADE,
+			external_id VARCHAR(512) NOT NULL,
+			package_name VARCHAR(255) NOT NULL DEFAULT '',
+			app_name VARCHAR(255),
+			title TEXT,
+			text TEXT,
+			sub_text TEXT,
+			category VARCHAR(128),
+			is_ongoing BOOLEAN NOT NULL DEFAULT FALSE,
+			is_clearable BOOLEAN NOT NULL DEFAULT TRUE,
+			actions JSONB,
+			posted_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(device_id, external_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_device_time ON notifications(device_id, received_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS sms_messages (
+			id BIGSERIAL PRIMARY KEY,
+			device_id VARCHAR(128) REFERENCES devices(id) ON DELETE CASCADE,
+			external_id VARCHAR(512) NOT NULL,
+			direction VARCHAR(16) NOT NULL DEFAULT 'inbound',
+			address VARCHAR(128) NOT NULL DEFAULT '',
+			body TEXT NOT NULL DEFAULT '',
+			person VARCHAR(255),
+			read BOOLEAN NOT NULL DEFAULT FALSE,
+			sms_timestamp TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(device_id, external_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_sms_messages_device_time ON sms_messages(device_id, received_at DESC);`,
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token VARCHAR(512);`,
 		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS battery_pct NUMERIC(5,2);`,
 		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS is_charging BOOLEAN;`,
 		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS network_name VARCHAR(128);`,
@@ -117,6 +150,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS network_name VARCHAR(128);`,
 		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64);`,
 		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS uptime_seconds BIGINT;`,
+		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS control_mode VARCHAR(16);`,
 	}
 
 	for _, q := range queries {
@@ -150,13 +184,35 @@ func (d *DB) UpdateDeviceStatus(deviceID, status string) error {
 	return err
 }
 
+func (d *DB) UpdateDeviceFCMToken(deviceID, token string) error {
+	query := `UPDATE devices SET fcm_token = $1, last_seen_at = NOW() WHERE id = $2`
+	_, err := d.conn.Exec(query, token, deviceID)
+	return err
+}
+
+func (d *DB) GetDeviceFCMToken(deviceID string) (string, error) {
+	var token sql.NullString
+	query := `SELECT fcm_token FROM devices WHERE id = $1`
+	err := d.conn.QueryRow(query, deviceID).Scan(&token)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !token.Valid {
+		return "", nil
+	}
+	return token.String, nil
+}
+
 func (d *DB) UpsertSystemInfo(info *models.DeviceSystemInfo) error {
 	query := `
 		INSERT INTO device_system_info (
 			device_id, cpu_model, cpu_cores, ram_total_bytes, disk_total_bytes,
 			os_version, kernel_version, arch, ip_address, mac_address, timezone, agent_version,
-			public_ip, network_name, uptime_seconds, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+			public_ip, network_name, uptime_seconds, control_mode, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
 		ON CONFLICT (device_id) DO UPDATE SET
 			cpu_model = EXCLUDED.cpu_model,
 			cpu_cores = EXCLUDED.cpu_cores,
@@ -172,12 +228,14 @@ func (d *DB) UpsertSystemInfo(info *models.DeviceSystemInfo) error {
 			public_ip = COALESCE(NULLIF(EXCLUDED.public_ip, ''), device_system_info.public_ip),
 			network_name = COALESCE(NULLIF(EXCLUDED.network_name, ''), device_system_info.network_name),
 			uptime_seconds = EXCLUDED.uptime_seconds,
+			control_mode = COALESCE(NULLIF(EXCLUDED.control_mode, ''), device_system_info.control_mode),
 			updated_at = NOW();
 	`
 	_, err := d.conn.Exec(query,
 		info.DeviceID, info.CPUModel, info.CPUCores, info.RAMTotalBytes, info.DiskTotalBytes,
 		info.OSVersion, info.KernelVersion, info.Arch, info.IPAddress, info.MACAddress,
 		info.Timezone, info.AgentVersion, info.PublicIP, info.NetworkName, info.UptimeSeconds,
+		info.ControlMode,
 	)
 	return err
 }
@@ -312,7 +370,7 @@ func (d *DB) GetDevices() ([]models.Device, error) {
 		SELECT d.id, d.name, d.hostname, d.os, d.platform, d.status, d.first_seen_at, d.last_seen_at,
 		       s.cpu_model, s.cpu_cores, s.ram_total_bytes, s.disk_total_bytes,
 		       s.os_version, s.kernel_version, s.arch, s.ip_address, s.mac_address, s.timezone, s.agent_version,
-		       s.public_ip, s.network_name, s.uptime_seconds, s.updated_at
+		       s.public_ip, s.network_name, s.uptime_seconds, s.control_mode, s.updated_at
 		FROM devices d
 		LEFT JOIN device_system_info s ON d.id = s.device_id
 		ORDER BY d.last_seen_at DESC
@@ -328,16 +386,16 @@ func (d *DB) GetDevices() ([]models.Device, error) {
 		var dev models.Device
 		var s models.DeviceSystemInfo
 		var (
-			cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer, pubIP, netName sql.NullString
-			cpuCores, ramTotal, diskTotal, uptimeSec                                              sql.NullInt64
-			sysUpdatedAt                                                                         sql.NullTime
+			cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer, pubIP, netName, controlMode sql.NullString
+			cpuCores, ramTotal, diskTotal, uptimeSec                                                             sql.NullInt64
+			sysUpdatedAt                                                                                         sql.NullTime
 		)
 
 		err := rows.Scan(
 			&dev.ID, &dev.Name, &dev.Hostname, &dev.OS, &dev.Platform, &dev.Status, &dev.FirstSeenAt, &dev.LastSeenAt,
 			&cpuModel, &cpuCores, &ramTotal, &diskTotal,
 			&osVersion, &kernelVersion, &arch, &ip, &mac, &timezone, &agentVer,
-			&pubIP, &netName, &uptimeSec, &sysUpdatedAt,
+			&pubIP, &netName, &uptimeSec, &controlMode, &sysUpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -359,6 +417,7 @@ func (d *DB) GetDevices() ([]models.Device, error) {
 			s.PublicIP = pubIP.String
 			s.NetworkName = netName.String
 			s.UptimeSeconds = uint64(uptimeSec.Int64)
+			s.ControlMode = controlMode.String
 			s.UpdatedAt = sysUpdatedAt.Time
 			dev.SystemInfo = &s
 		}
@@ -374,7 +433,7 @@ func (d *DB) GetDevice(id string) (*models.Device, error) {
 		SELECT d.id, d.name, d.hostname, d.os, d.platform, d.status, d.first_seen_at, d.last_seen_at,
 		       s.cpu_model, s.cpu_cores, s.ram_total_bytes, s.disk_total_bytes,
 		       s.os_version, s.kernel_version, s.arch, s.ip_address, s.mac_address, s.timezone, s.agent_version,
-		       s.public_ip, s.network_name, s.uptime_seconds, s.updated_at
+		       s.public_ip, s.network_name, s.uptime_seconds, s.control_mode, s.updated_at
 		FROM devices d
 		LEFT JOIN device_system_info s ON d.id = s.device_id
 		WHERE d.id = $1
@@ -384,16 +443,16 @@ func (d *DB) GetDevice(id string) (*models.Device, error) {
 	var dev models.Device
 	var s models.DeviceSystemInfo
 	var (
-		cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer, pubIP, netName sql.NullString
-		cpuCores, ramTotal, diskTotal, uptimeSec                                              sql.NullInt64
-		sysUpdatedAt                                                                         sql.NullTime
+		cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer, pubIP, netName, controlMode sql.NullString
+		cpuCores, ramTotal, diskTotal, uptimeSec                                                             sql.NullInt64
+		sysUpdatedAt                                                                                         sql.NullTime
 	)
 
 	err := row.Scan(
 		&dev.ID, &dev.Name, &dev.Hostname, &dev.OS, &dev.Platform, &dev.Status, &dev.FirstSeenAt, &dev.LastSeenAt,
 		&cpuModel, &cpuCores, &ramTotal, &diskTotal,
 		&osVersion, &kernelVersion, &arch, &ip, &mac, &timezone, &agentVer,
-		&pubIP, &netName, &uptimeSec, &sysUpdatedAt,
+		&pubIP, &netName, &uptimeSec, &controlMode, &sysUpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -418,6 +477,7 @@ func (d *DB) GetDevice(id string) (*models.Device, error) {
 		s.PublicIP = pubIP.String
 		s.NetworkName = netName.String
 		s.UptimeSeconds = uint64(uptimeSec.Int64)
+		s.ControlMode = controlMode.String
 		s.UpdatedAt = sysUpdatedAt.Time
 		dev.SystemInfo = &s
 	}
@@ -543,4 +603,156 @@ func (d *DB) GetCommand(id string) (*models.Command, error) {
 	}
 
 	return &cmd, nil
+}
+
+func (d *DB) InsertNotification(n *models.NotificationRecord) error {
+	d.ensureDeviceExists(n.DeviceID)
+
+	if n.ExternalID == "" {
+		n.ExternalID = fmt.Sprintf("%s-%.0f", n.PackageName, float64(time.Now().UnixNano()))
+	}
+	actionsJSON, err := json.Marshal(n.Actions)
+	if err != nil {
+		actionsJSON = []byte("[]")
+	}
+	postedAt := n.PostedAt
+	if postedAt.IsZero() {
+		postedAt = time.Now()
+	}
+	receivedAt := n.ReceivedAt
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
+
+	query := `
+		INSERT INTO notifications (
+			device_id, external_id, package_name, app_name, title, text, sub_text,
+			category, is_ongoing, is_clearable, actions, posted_at, received_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (device_id, external_id) DO UPDATE SET
+			title = EXCLUDED.title,
+			text = EXCLUDED.text,
+			sub_text = EXCLUDED.sub_text,
+			category = EXCLUDED.category,
+			is_ongoing = EXCLUDED.is_ongoing,
+			is_clearable = EXCLUDED.is_clearable,
+			actions = EXCLUDED.actions,
+			received_at = EXCLUDED.received_at;
+	`
+	_, err = d.conn.Exec(query,
+		n.DeviceID, n.ExternalID, n.PackageName, n.AppName, n.Title, n.Text, n.SubText,
+		n.Category, n.IsOngoing, n.IsClearable, actionsJSON, postedAt, receivedAt,
+	)
+	return err
+}
+
+func (d *DB) GetNotifications(deviceID string, limit int) ([]models.NotificationRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	query := `
+		SELECT id, device_id, external_id, package_name, app_name, title, text, sub_text,
+		       category, is_ongoing, is_clearable, actions, posted_at, received_at
+		FROM notifications
+		WHERE device_id = $1
+		ORDER BY received_at DESC
+		LIMIT $2
+	`
+	rows, err := d.conn.Query(query, deviceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []models.NotificationRecord
+	for rows.Next() {
+		var n models.NotificationRecord
+		var (
+			appName, title, text, subText, category sql.NullString
+			actionsJSON                            []byte
+			postedAt                               sql.NullTime
+		)
+		if err := rows.Scan(
+			&n.ID, &n.DeviceID, &n.ExternalID, &n.PackageName, &appName, &title, &text, &subText,
+			&category, &n.IsOngoing, &n.IsClearable, &actionsJSON, &postedAt, &n.ReceivedAt,
+		); err != nil {
+			return nil, err
+		}
+		n.AppName = appName.String
+		n.Title = title.String
+		n.Text = text.String
+		n.SubText = subText.String
+		n.Category = category.String
+		n.PostedAt = postedAt.Time
+		_ = json.Unmarshal(actionsJSON, &n.Actions)
+		list = append(list, n)
+	}
+	return list, nil
+}
+
+func (d *DB) InsertSms(s *models.SmsMessage) error {
+	d.ensureDeviceExists(s.DeviceID)
+
+	if s.ExternalID == "" {
+		s.ExternalID = fmt.Sprintf("sms-%s-%.0f", s.Address, float64(time.Now().UnixNano()))
+	}
+	if s.Direction == "" {
+		s.Direction = "inbound"
+	}
+	timestamp := s.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	receivedAt := s.ReceivedAt
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
+
+	query := `
+		INSERT INTO sms_messages (
+			device_id, external_id, direction, address, body, person, read, sms_timestamp, received_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (device_id, external_id) DO UPDATE SET
+			body = EXCLUDED.body,
+			read = EXCLUDED.read,
+			received_at = EXCLUDED.received_at;
+	`
+	_, err := d.conn.Exec(query,
+		s.DeviceID, s.ExternalID, s.Direction, s.Address, s.Body, s.Person, s.Read, timestamp, receivedAt,
+	)
+	return err
+}
+
+func (d *DB) GetSmsMessages(deviceID string, limit int) ([]models.SmsMessage, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	query := `
+		SELECT id, device_id, external_id, direction, address, body, person, read, sms_timestamp, received_at
+		FROM sms_messages
+		WHERE device_id = $1
+		ORDER BY COALESCE(sms_timestamp, received_at) DESC
+		LIMIT $2
+	`
+	rows, err := d.conn.Query(query, deviceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []models.SmsMessage
+	for rows.Next() {
+		var s models.SmsMessage
+		var person sql.NullString
+		var ts sql.NullTime
+		if err := rows.Scan(
+			&s.ID, &s.DeviceID, &s.ExternalID, &s.Direction, &s.Address, &s.Body, &person, &s.Read, &ts, &s.ReceivedAt,
+		); err != nil {
+			return nil, err
+		}
+		s.Person = person.String
+		s.Timestamp = ts.Time
+		list = append(list, s)
+	}
+	return list, nil
 }

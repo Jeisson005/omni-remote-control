@@ -11,6 +11,7 @@ import (
 
 	"github.com/Jeisson005/omni-remote-control/server/internal/api"
 	"github.com/Jeisson005/omni-remote-control/server/internal/db"
+	"github.com/Jeisson005/omni-remote-control/server/internal/push"
 	"github.com/Jeisson005/omni-remote-control/server/internal/ws"
 )
 
@@ -32,7 +33,8 @@ func main() {
 		log.Fatalf("Database initialization error: %v", err)
 	}
 
-	hub := ws.NewHub(database)
+	pushClient := push.NewFromEnv()
+	hub := ws.NewHub(database, pushClient)
 	serverAPI := api.NewServer(database, hub)
 	router := serverAPI.SetupRoutes()
 

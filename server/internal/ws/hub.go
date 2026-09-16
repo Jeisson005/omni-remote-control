@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Jeisson005/omni-remote-control/server/internal/db"
 	"github.com/Jeisson005/omni-remote-control/server/internal/models"
+	"github.com/Jeisson005/omni-remote-control/server/internal/push"
 	"github.com/gorilla/websocket"
 )
 
@@ -30,15 +32,17 @@ type DeviceConn struct {
 
 type Hub struct {
 	db              *db.DB
+	push            *push.Client
 	clients         map[string]*DeviceConn // deviceID -> DeviceConn
 	clientsMu       sync.RWMutex
 	pendingCommands map[string]chan *models.Command // commandID -> chan
 	cmdMu           sync.RWMutex
 }
 
-func NewHub(database *db.DB) *Hub {
+func NewHub(database *db.DB, pushClient *push.Client) *Hub {
 	return &Hub{
 		db:              database,
+		push:            pushClient,
 		clients:         make(map[string]*DeviceConn),
 		pendingCommands: make(map[string]chan *models.Command),
 	}
@@ -222,6 +226,87 @@ func (h *Hub) handleMessage(devConn *DeviceConn, msg *models.WSMessage) {
 		}
 		h.cmdMu.Unlock()
 
+	case "fcm_token":
+		var payload struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			log.Printf("Failed to unmarshal fcm_token payload: %v", err)
+			return
+		}
+		if payload.Token == "" {
+			return
+		}
+		if err := h.db.UpdateDeviceFCMToken(devConn.DeviceID, payload.Token); err != nil {
+			log.Printf("Error storing FCM token for %s: %v", devConn.DeviceID, err)
+		} else {
+			log.Printf("FCM token updated for device %s", devConn.DeviceID)
+		}
+
+	case "notification":
+		var n models.NotificationRecord
+		if err := json.Unmarshal(msg.Payload, &n); err != nil {
+			log.Printf("Failed to unmarshal notification payload: %v", err)
+			return
+		}
+		if n.DeviceID == "" {
+			n.DeviceID = devConn.DeviceID
+		}
+		if err := h.db.InsertNotification(&n); err != nil {
+			log.Printf("Error storing notification for %s: %v", devConn.DeviceID, err)
+		}
+
+	case "sms":
+		var s models.SmsMessage
+		if err := json.Unmarshal(msg.Payload, &s); err != nil {
+			log.Printf("Failed to unmarshal sms payload: %v", err)
+			return
+		}
+		if s.DeviceID == "" {
+			s.DeviceID = devConn.DeviceID
+		}
+		if err := h.db.InsertSms(&s); err != nil {
+			log.Printf("Error storing sms for %s: %v", devConn.DeviceID, err)
+		}
+
+	case "notifications_sync":
+		var payload struct {
+			Notifications []models.NotificationRecord `json:"notifications"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			log.Printf("Failed to unmarshal notifications_sync payload: %v", err)
+			return
+		}
+		for i := range payload.Notifications {
+			n := payload.Notifications[i]
+			if n.DeviceID == "" {
+				n.DeviceID = devConn.DeviceID
+			}
+			if err := h.db.InsertNotification(&n); err != nil {
+				log.Printf("Error storing synced notification: %v", err)
+			}
+		}
+		log.Printf("Synced %d notifications from device %s", len(payload.Notifications), devConn.DeviceID)
+
+	case "sms_sync":
+		var payload struct {
+			Messages []models.SmsMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			log.Printf("Failed to unmarshal sms_sync payload: %v", err)
+			return
+		}
+		for i := range payload.Messages {
+			s := payload.Messages[i]
+			if s.DeviceID == "" {
+				s.DeviceID = devConn.DeviceID
+			}
+			if err := h.db.InsertSms(&s); err != nil {
+				log.Printf("Error storing synced sms: %v", err)
+			}
+		}
+		log.Printf("Synced %d SMS from device %s", len(payload.Messages), devConn.DeviceID)
+
 	case "ping":
 		pong, _ := json.Marshal(models.WSMessage{Type: "pong"})
 		select {
@@ -301,4 +386,54 @@ func (h *Hub) IsDeviceOnline(deviceID string) bool {
 	defer h.clientsMu.RUnlock()
 	_, exists := h.clients[deviceID]
 	return exists
+}
+
+// WakeDevice envía un push FCM de alta prioridad al dispositivo para que abra
+// su sesión WebSocket (útil en clientes Android Doze-friendly). Es no-op si el
+// dispositivo ya está online o si FCM no está configurado.
+func (h *Hub) WakeDevice(deviceID string) {
+	if h.IsDeviceOnline(deviceID) {
+		return
+	}
+	if !h.push.Enabled() {
+		return
+	}
+
+	token, err := h.db.GetDeviceFCMToken(deviceID)
+	if err != nil {
+		log.Printf("Could not retrieve FCM token for %s: %v", deviceID, err)
+		return
+	}
+	if token == "" {
+		log.Printf("Device %s has no FCM token registered; cannot wake remotely", deviceID)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	if err := h.push.SendWake(ctx, token, map[string]string{"action": "START_CONTROL"}); err != nil {
+		log.Printf("Failed to send wake push to %s: %v", deviceID, err)
+		return
+	}
+	log.Printf("Wake push sent to device %s", deviceID)
+}
+
+// EnsureOnline despierta al dispositivo (si es necesario) y espera hasta que su
+// conexión WebSocket esté registrada, o hasta agotar el timeout.
+func (h *Hub) EnsureOnline(deviceID string, timeout time.Duration) bool {
+	if h.IsDeviceOnline(deviceID) {
+		return true
+	}
+
+	h.WakeDevice(deviceID)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if h.IsDeviceOnline(deviceID) {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return h.IsDeviceOnline(deviceID)
 }

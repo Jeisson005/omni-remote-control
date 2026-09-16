@@ -17,6 +17,7 @@ import androidx.work.WorkerParameters
 import com.google.gson.Gson
 import com.omni.remote.data.models.TelemetryMetric
 import com.omni.remote.data.prefs.PreferencesManager
+import com.omni.remote.data.remote.ApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -60,6 +61,14 @@ class TelemetryWorker(
             httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     Log.d(TAG, "Periodic telemetry sent successfully (HTTP ${response.code})")
+                    // Reintenta reenviar notificaciones/SMS pendientes de forma best-effort.
+                    try {
+                        ApiClient.getInstance(context).flushBlocking()
+                        // Registra el token FCM por HTTP para permitir despertar en Doze.
+                        prefs.fcmToken?.let { ApiClient.getInstance(context).registerFcmToken(it) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Pending sync flush failed: ${e.message}")
+                    }
                     Result.success()
                 } else {
                     Log.w(TAG, "Failed to deliver telemetry: HTTP ${response.code} - ${response.body?.string()}")

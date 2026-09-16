@@ -177,6 +177,190 @@
                         android:textSize="12sp" />
                 </LinearLayout>
 
+                <!-- Acceso a Notificaciones -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="12dp">
+
+                    <TextView
+                        android:id="@+id/tvNotificationAccessStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Acceso a Notificaciones: Inactivo"
+                        android:textColor="#FF5252"
+                        android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/btnNotificationAccess"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Habilitar"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <!-- Permisos SMS -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="12dp">
+
+                    <TextView
+                        android:id="@+id/tvSmsPermissionStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Permisos SMS: Inactivos"
+                        android:textColor="#FF5252"
+                        android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/btnRequestSmsPermissions"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Solicitar"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Card: Modo de Control y Desbloqueo -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardBackgroundColor="#1E1E1E">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Modo de Control y Desbloqueo"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="12dp" />
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/swAutoMode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Modo automático (desatendido)"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp" />
+
+                <CheckBox
+                    android:id="@+id/cbAllowRemoteModeChange"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Permitir cambio de modo por API"
+                    android:textColor="#AAAAAA"
+                    android:textSize="13sp"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- Shizuku -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:id="@+id/tvShizukuStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Shizuku: no disponible"
+                        android:textColor="#FF5252"
+                        android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/btnShizukuPermission"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Autorizar"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <!-- Device Owner -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:id="@+id/tvDeviceOwnerStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Device Owner: no"
+                        android:textColor="#FFA000"
+                        android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/btnRequestDeviceAdmin"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Admin"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <!-- Patrón -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:id="@+id/tvPatternStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Patrón guardado: no"
+                        android:textColor="#AAAAAA"
+                        android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/btnSetPattern"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Definir"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/btnClearPattern"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Borrar"
+                        android:textSize="12sp"
+                        android:layout_marginStart="4dp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnTestUnlock"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Probar desbloqueo"
+                    android:textSize="13sp"
+                    android:layout_marginTop="8dp" />
+
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

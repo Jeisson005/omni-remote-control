@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -65,6 +66,10 @@ func (s *Server) SetupRoutes() http.Handler {
 		_ = s.db.UpdateDeviceStatus(metric.DeviceID, "online")
 		writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "success", "metric": metric})
 	})
+
+	// Ingesta directa de notificaciones y SMS (clientes Android con WorkManager/BroadcastReceiver)
+	mux.HandleFunc("/api/v1/notifications", s.handleNotificationIngest)
+	mux.HandleFunc("/api/v1/sms", s.handleSmsIngest)
 
 	// MCP Tools metadata & invocation
 	mux.HandleFunc("/api/v1/mcp/tools", s.handleMCPTools)
@@ -362,9 +367,343 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 
+	case "notifications":
+		// /api/v1/devices/{id}/notifications/action
+		if len(parts) > 5 && parts[5] == "action" {
+			if r.Method != http.MethodPost {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Key         string `json:"key"`
+				ActionIndex int    `json:"action_index"`
+				ReplyText   string `json:"reply_text"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+				return
+			}
+			if req.Key == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "notification key is required"})
+				return
+			}
+			output, err := s.executeDeviceCommand(deviceID, "notification_action", map[string]interface{}{
+				"key":          req.Key,
+				"action_index": req.ActionIndex,
+				"reply_text":   req.ReplyText,
+			})
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "result": output})
+			return
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		limit := parseLimit(r, 50)
+		isLive := r.URL.Query().Get("live") == "true" || r.URL.Query().Get("live") == "1" ||
+			(len(parts) > 5 && parts[5] == "live")
+
+		if isLive {
+			records, err := s.collectLiveNotifications(deviceID, limit)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, records)
+			return
+		}
+
+		records, err := s.db.GetNotifications(deviceID, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, records)
+		return
+
+	case "sms":
+		if r.Method == http.MethodPost {
+			var req struct {
+				Address string `json:"address"`
+				Body    string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+				return
+			}
+			if req.Address == "" || req.Body == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "address and body are required"})
+				return
+			}
+			output, err := s.executeDeviceCommand(deviceID, "send_sms", map[string]interface{}{
+				"address": req.Address,
+				"body":    req.Body,
+			})
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "result": output})
+			return
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		limit := parseLimit(r, 50)
+		isLive := r.URL.Query().Get("live") == "true" || r.URL.Query().Get("live") == "1" ||
+			(len(parts) > 5 && parts[5] == "live")
+
+		if isLive {
+			messages, err := s.collectLiveSms(deviceID, limit)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, messages)
+			return
+		}
+
+		messages, err := s.db.GetSmsMessages(deviceID, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, messages)
+		return
+
+	case "fcm-token":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+			return
+		}
+		if err := s.db.UpdateDeviceFCMToken(deviceID, req.Token); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "success"})
+		return
+
+	case "unlock", "lock", "wake":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		commandType := map[string]string{
+			"unlock": "unlock_device",
+			"lock":   "lock_device",
+			"wake":   "wake_device",
+		}[action]
+		output, err := s.executeDeviceCommand(deviceID, commandType, map[string]interface{}{})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "result": output})
+		return
+
+	case "mode":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+			return
+		}
+		if req.Mode != "auto" && req.Mode != "consent" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be 'auto' or 'consent'"})
+			return
+		}
+		output, err := s.executeDeviceCommand(deviceID, "set_control_mode", map[string]interface{}{"mode": req.Mode})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "result": output})
+		return
+
+	case "permissions":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Package    string `json:"package"`
+			Permission string `json:"permission"`
+			Grant      bool   `json:"grant"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+			return
+		}
+		if req.Package == "" || req.Permission == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "package and permission are required"})
+			return
+		}
+		commandType := "grant_permission"
+		if !req.Grant {
+			commandType = "revoke_permission"
+		}
+		output, err := s.executeDeviceCommand(deviceID, commandType, map[string]interface{}{
+			"package":    req.Package,
+			"permission": req.Permission,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "result": output})
+		return
+
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// handleNotificationIngest recibe notificaciones reenviadas de forma directa
+// (HTTP POST) por el cliente Android, incluso sin sesión WebSocket activa.
+func (s *Server) handleNotificationIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var n models.NotificationRecord
+	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid notification payload: " + err.Error()})
+		return
+	}
+	if n.DeviceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id is required"})
+		return
+	}
+	if err := s.db.InsertNotification(&n); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to store notification: " + err.Error()})
+		return
+	}
+	_ = s.db.UpdateDeviceStatus(n.DeviceID, "online")
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "success", "notification": n})
+}
+
+// handleSmsIngest recibe SMS reenviados de forma directa por el cliente Android.
+func (s *Server) handleSmsIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var m models.SmsMessage
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid sms payload: " + err.Error()})
+		return
+	}
+	if m.DeviceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id is required"})
+		return
+	}
+	if err := s.db.InsertSms(&m); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to store sms: " + err.Error()})
+		return
+	}
+	_ = s.db.UpdateDeviceStatus(m.DeviceID, "online")
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "success", "sms": m})
+}
+
+func (s *Server) executeDeviceCommand(deviceID, commandType string, payload map[string]interface{}) (string, error) {
+	if !s.hub.EnsureOnline(deviceID, 25*time.Second) {
+		return "", fmt.Errorf("device %s is offline and could not be woken", deviceID)
+	}
+
+	cmd := &models.Command{
+		ID:        uuid.New().String(),
+		DeviceID:  deviceID,
+		Type:      commandType,
+		Payload:   payload,
+		CreatedAt: time.Now(),
+	}
+
+	res, err := s.hub.SendCommand(cmd, 25*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		errMsg := res.Error
+		if errMsg == "" {
+			errMsg = "device returned a non-zero exit code"
+		}
+		return "", fmt.Errorf("%s", errMsg)
+	}
+	return res.Output, nil
+}
+
+func (s *Server) collectLiveNotifications(deviceID string, limit int) ([]models.NotificationRecord, error) {
+	output, err := s.executeDeviceCommand(deviceID, "get_notifications", map[string]interface{}{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+
+	var records []models.NotificationRecord
+	if err := json.Unmarshal([]byte(output), &records); err != nil {
+		return nil, fmt.Errorf("failed to parse live notifications: %w", err)
+	}
+
+	for i := range records {
+		if records[i].DeviceID == "" {
+			records[i].DeviceID = deviceID
+		}
+		_ = s.db.InsertNotification(&records[i])
+	}
+	_ = s.db.UpdateDeviceStatus(deviceID, "online")
+	return records, nil
+}
+
+func (s *Server) collectLiveSms(deviceID string, limit int) ([]models.SmsMessage, error) {
+	output, err := s.executeDeviceCommand(deviceID, "get_sms", map[string]interface{}{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+
+	var messages []models.SmsMessage
+	if err := json.Unmarshal([]byte(output), &messages); err != nil {
+		return nil, fmt.Errorf("failed to parse live sms: %w", err)
+	}
+
+	for i := range messages {
+		if messages[i].DeviceID == "" {
+			messages[i].DeviceID = deviceID
+		}
+		_ = s.db.InsertSms(&messages[i])
+	}
+	_ = s.db.UpdateDeviceStatus(deviceID, "online")
+	return messages, nil
+}
+
+func parseLimit(r *http.Request, fallback int) int {
+	limitStr := r.URL.Query().Get("limit")
+	if limitStr == "" {
+		return fallback
+	}
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		return l
+	}
+	return fallback
 }
 
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
@@ -464,6 +803,118 @@ func (s *Server) handleMCPTools(w http.ResponseWriter, r *http.Request) {
 					"limit":      map[string]interface{}{"type": "integer", "description": "Cantidad máxima de eventos (default 20)"},
 				},
 				"required": []string{"device_id"},
+			},
+		},
+		{
+			"name":        "get_device_notifications",
+			"description": "Consulta las notificaciones capturadas de otras apps en un dispositivo Android (WhatsApp, correo, bancos, etc.). Con live=true despierta al dispositivo vía FCM y obtiene además las notificaciones activas en tiempo real.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+					"limit":     map[string]interface{}{"type": "integer", "description": "Cantidad máxima de notificaciones (default 50)"},
+					"live":      map[string]interface{}{"type": "boolean", "description": "Si es true, despierta el dispositivo y lee las notificaciones activas ahora mismo."},
+				},
+				"required": []string{"device_id"},
+			},
+		},
+		{
+			"name":        "get_device_sms",
+			"description": "Consulta los SMS de un dispositivo Android (entrantes reenviados e historial de la bandeja de entrada). Con live=true despierta al dispositivo vía FCM y extrae el historial completo vía READ_SMS.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+					"limit":     map[string]interface{}{"type": "integer", "description": "Cantidad máxima de mensajes (default 50)"},
+					"live":      map[string]interface{}{"type": "boolean", "description": "Si es true, despierta el dispositivo y lee la bandeja de entrada ahora mismo."},
+				},
+				"required": []string{"device_id"},
+			},
+		},
+		{
+			"name":        "send_device_sms",
+			"description": "Envía un SMS desde un dispositivo Android remoto (requiere permiso SEND_SMS).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+					"address":   map[string]interface{}{"type": "string", "description": "Número de teléfono destino"},
+					"body":      map[string]interface{}{"type": "string", "description": "Contenido del mensaje"},
+				},
+				"required": []string{"device_id", "address", "body"},
+			},
+		},
+		{
+			"name":        "notification_action",
+			"description": "Ejecuta un botón de acción de una notificación Android (por ejemplo 'Responder' o 'Marcar como leído') identificado por su key y el índice de acción.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id":    map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+					"key":          map[string]interface{}{"type": "string", "description": "Key de la notificación (campo external_id)"},
+					"action_index": map[string]interface{}{"type": "integer", "description": "Índice del botón de acción a ejecutar (default 0)"},
+					"reply_text":   map[string]interface{}{"type": "string", "description": "Texto opcional para acciones de respuesta directa (RemoteInput)"},
+				},
+				"required": []string{"device_id", "key"},
+			},
+		},
+		{
+			"name":        "unlock_device",
+			"description": "Desbloquea la pantalla de un dispositivo Android (Device Owner, Shizuku/locksettings o patrón local). Requiere que el dispositivo ya tenga una estrategia de desbloqueo configurada.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+				},
+				"required": []string{"device_id"},
+			},
+		},
+		{
+			"name":        "lock_device",
+			"description": "Bloquea la pantalla de un dispositivo Android (Device Admin o Shizuku).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+				},
+				"required": []string{"device_id"},
+			},
+		},
+		{
+			"name":        "wake_device",
+			"description": "Enciende la pantalla de un dispositivo Android sin desbloquearlo.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+				},
+				"required": []string{"device_id"},
+			},
+		},
+		{
+			"name":        "grant_device_permission",
+			"description": "Concede o revoca un permiso peligroso en un dispositivo Android de forma silenciosa usando Shizuku (pm grant/revoke).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id":  map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+					"package":    map[string]interface{}{"type": "string", "description": "Paquete destino (ej. com.example.app)"},
+					"permission": map[string]interface{}{"type": "string", "description": "Permiso (ej. android.permission.CAMERA)"},
+					"grant":      map[string]interface{}{"type": "boolean", "description": "true para conceder, false para revocar"},
+				},
+				"required": []string{"device_id", "package", "permission"},
+			},
+		},
+		{
+			"name":        "set_device_control_mode",
+			"description": "Cambia el modo de control de un dispositivo Android ('auto' desatendido o 'consent' con aprobación del usuario). Requiere que el dispositivo permita cambios remotos de modo.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo Android"},
+					"mode":      map[string]interface{}{"type": "string", "description": "'auto' o 'consent'"},
+				},
+				"required": []string{"device_id", "mode"},
 			},
 		},
 	}
@@ -630,6 +1081,148 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"result": events})
+
+	case "get_device_notifications":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		isLive, _ := req.Arguments["live"].(bool)
+		limit := 50
+		if l, ok := req.Arguments["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+
+		if isLive {
+			records, err := s.collectLiveNotifications(deviceID, limit)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"result": records})
+			return
+		}
+
+		records, err := s.db.GetNotifications(deviceID, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": records})
+
+	case "get_device_sms":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		isLive, _ := req.Arguments["live"].(bool)
+		limit := 50
+		if l, ok := req.Arguments["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+
+		if isLive {
+			messages, err := s.collectLiveSms(deviceID, limit)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"result": messages})
+			return
+		}
+
+		messages, err := s.db.GetSmsMessages(deviceID, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": messages})
+
+	case "send_device_sms":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		address, _ := req.Arguments["address"].(string)
+		body, _ := req.Arguments["body"].(string)
+		if address == "" || body == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "address and body are required"})
+			return
+		}
+		output, err := s.executeDeviceCommand(deviceID, "send_sms", map[string]interface{}{
+			"address": address,
+			"body":    body,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": output})
+
+	case "notification_action":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		key, _ := req.Arguments["key"].(string)
+		actionIndex := 0
+		if idx, ok := req.Arguments["action_index"].(float64); ok {
+			actionIndex = int(idx)
+		}
+		replyText, _ := req.Arguments["reply_text"].(string)
+		if key == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key is required"})
+			return
+		}
+		output, err := s.executeDeviceCommand(deviceID, "notification_action", map[string]interface{}{
+			"key":          key,
+			"action_index": actionIndex,
+			"reply_text":   replyText,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": output})
+
+	case "unlock_device", "lock_device", "wake_device":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		commandType := map[string]string{
+			"unlock_device": "unlock_device",
+			"lock_device":   "lock_device",
+			"wake_device":   "wake_device",
+		}[req.Name]
+		output, err := s.executeDeviceCommand(deviceID, commandType, map[string]interface{}{})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": output})
+
+	case "grant_device_permission":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		pkg, _ := req.Arguments["package"].(string)
+		permission, _ := req.Arguments["permission"].(string)
+		grant, _ := req.Arguments["grant"].(bool)
+		if pkg == "" || permission == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "package and permission are required"})
+			return
+		}
+		commandType := "grant_permission"
+		if !grant {
+			commandType = "revoke_permission"
+		}
+		output, err := s.executeDeviceCommand(deviceID, commandType, map[string]interface{}{
+			"package":    pkg,
+			"permission": permission,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": output})
+
+	case "set_device_control_mode":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		mode, _ := req.Arguments["mode"].(string)
+		if mode != "auto" && mode != "consent" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be 'auto' or 'consent'"})
+			return
+		}
+		output, err := s.executeDeviceCommand(deviceID, "set_control_mode", map[string]interface{}{"mode": mode})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": output})
 
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Unknown tool"})
