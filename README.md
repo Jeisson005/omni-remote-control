@@ -26,12 +26,17 @@ Para garantizar un monitoreo integral sin saturar la red ni la base de datos, la
    - Dirección IP local, dirección MAC y zona horaria.
    - Versión del agente.
    
-2. **Telemetría Dinámica y Periódica (Intervalo configurable, ej. 30s - 2min):**
+2. **Telemetría Dinámica Periódica (Intervalo por defecto: 1 hora / 3600s, configurable):**
    - Porcentaje de uso de CPU (cálculo delta en tiempo real).
    - Memoria RAM utilizada (MB y porcentaje de ocupación).
    - Porcentaje de uso del disco principal.
-   - Lista de ventanas activas/visibles con sus IDs y títulos (`wmctrl -l`).
-   - Top procesos del sistema ordenados por consumo de CPU y memoria (`ps`).
+   - Lista de ventanas activas/visibles con sus IDs y títulos (`wmctrl -l` en Linux, `EnumWindows` en Windows).
+   - Top procesos del sistema ordenados por consumo de CPU y memoria (`ps` en Linux, `tasklist` en Windows).
+
+3. **Telemetría en Vivo a Demanda (On-Demand Live Collection):**
+   - Permite solicitar en cualquier momento el estado actual del dispositivo en tiempo real.
+   - El servidor solicita al agente cliente vía WebSocket que recopile las métricas en ese instante exacto.
+   - El resultado se **persiste automáticamente en PostgreSQL** en la tabla `telemetry_metrics` y se **entrega de inmediato en la respuesta HTTP o del MCP tool**.
 
 ---
 
@@ -134,9 +139,20 @@ docker compose logs -f server
 curl -s http://localhost:8090/api/v1/devices | python3 -m json.tool
 ```
 
-### 2. Consultar Telemetría Histórica de un Dispositivo
+### 2. Consultar Telemetría de un Dispositivo
+
+* **Historial almacenado en Base de Datos:**
 ```bash
 curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/telemetry?limit=5" | python3 -m json.tool
+```
+
+* **Telemetría EN VIVO a demanda (recolectada al instante y guardada en BD):**
+```bash
+# Vía parámetro ?live=true
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/telemetry?live=true" | python3 -m json.tool
+
+# O directamente vía subruta /telemetry/live
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/telemetry/live" | python3 -m json.tool
 ```
 
 ### 3. Ejecutar Comando en Terminal Remota
@@ -208,7 +224,7 @@ El servidor expone herramientas para agentes de Inteligencia Artificial (Claude,
 - `GET /api/v1/mcp/tools`: Lista las herramientas disponibles (`list_devices`, `get_device_telemetry`, `execute_shell_command`, `control_gui`).
 - `POST /api/v1/mcp/tools/call`: Ejecución directa de herramientas por parte de agentes IA.
 
-Ejemplo de llamada MCP:
+Ejemplo de llamada MCP (Ejecución remota de comandos):
 ```bash
 curl -s -X POST http://localhost:8090/api/v1/mcp/tools/call \
   -H "Content-Type: application/json" \
@@ -217,6 +233,19 @@ curl -s -X POST http://localhost:8090/api/v1/mcp/tools/call \
     "arguments": {
       "device_id": "<DEVICE_ID>",
       "command": "free -h"
+    }
+  }' | python3 -m json.tool
+```
+
+Ejemplo de llamada MCP (Telemetría en vivo a demanda):
+```bash
+curl -s -X POST http://localhost:8090/api/v1/mcp/tools/call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "get_device_telemetry",
+    "arguments": {
+      "device_id": "<DEVICE_ID>",
+      "live": true
     }
   }' | python3 -m json.tool
 ```

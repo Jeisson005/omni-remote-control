@@ -230,6 +230,17 @@ func (a *AgentClient) handleServerMessage(msg *WSMessage) {
 			exitCode = res.ExitCode
 			output = res.Output
 			errMsg = res.Error
+		} else if cmdReq.Type == "collect_telemetry" || cmdReq.Type == "telemetry" {
+			data := a.collector.Collect(a.cfg.DeviceID)
+			jsonData, err := json.Marshal(data)
+			if err != nil {
+				exitCode = 1
+				errMsg = "failed to marshal telemetry: " + err.Error()
+			} else {
+				exitCode = 0
+				output = string(jsonData)
+				errMsg = ""
+			}
 		} else {
 			exitCode = 1
 			errMsg = "unsupported command type for Windows: " + cmdReq.Type

@@ -221,6 +221,20 @@ func (a *AgentClient) handleServerMessage(msg *WSMessage) {
 				timeoutSec = int(t)
 			}
 			res = executor.ExecuteShell(cmdStr, time.Duration(timeoutSec)*time.Second)
+		} else if cmdReq.Type == "collect_telemetry" || cmdReq.Type == "telemetry" {
+			data := a.collector.Collect(a.cfg.DeviceID)
+			jsonData, err := json.Marshal(data)
+			if err != nil {
+				res = &executor.ExecutionResult{
+					ExitCode: 1,
+					Error:    "failed to marshal telemetry: " + err.Error(),
+				}
+			} else {
+				res = &executor.ExecutionResult{
+					ExitCode: 0,
+					Output:   string(jsonData),
+				}
+			}
 		} else {
 			res = &executor.ExecutionResult{
 				ExitCode: 1,

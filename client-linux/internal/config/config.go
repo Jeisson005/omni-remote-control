@@ -39,7 +39,7 @@ func LoadConfig() *Config {
 		}
 	}
 
-	metricsSec := 120 // 2 minutes by default
+	metricsSec := 3600 // 1 hora por defecto
 	if s := os.Getenv("OMNI_METRICS_SECONDS"); s != "" {
 		if d, err := time.ParseDuration(s + "s"); err == nil {
 			metricsSec = int(d.Seconds())

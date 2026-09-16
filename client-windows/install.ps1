@@ -57,7 +57,7 @@ if (-not (Test-Path $ConfigFile)) {
 OMNI_SERVER_URL=$ServerUrl
 OMNI_DEVICE_NAME=$DeviceName
 OMNI_DEVICE_ID=$DeviceId
-OMNI_METRICS_SECONDS=120
+OMNI_METRICS_SECONDS=3600
 OMNI_HEARTBEAT_SECONDS=86400
 "@
     Set-Content -Path $ConfigFile -Value $ConfigContent

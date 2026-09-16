@@ -117,6 +117,62 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "telemetry":
 		if r.Method == http.MethodGet {
+			isLive := r.URL.Query().Get("live") == "true" || r.URL.Query().Get("live") == "1"
+			if len(parts) > 5 && parts[5] == "live" {
+				isLive = true
+			}
+
+			if isLive {
+				cmd := &models.Command{
+					ID:        uuid.New().String(),
+					DeviceID:  deviceID,
+					Type:      "collect_telemetry",
+					Payload:   map[string]interface{}{},
+					CreatedAt: time.Now(),
+				}
+
+				executedCmd, err := s.hub.SendCommand(cmd, 15*time.Second)
+				if err != nil {
+					writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+						"error": "Failed to request live telemetry from device: " + err.Error(),
+					})
+					return
+				}
+
+				if executedCmd.ExitCode != 0 || executedCmd.Output == "" {
+					errMsg := executedCmd.Error
+					if errMsg == "" {
+						errMsg = "telemetry output was empty"
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"error": "Failed to collect live telemetry: " + errMsg,
+					})
+					return
+				}
+
+				var metric models.TelemetryMetric
+				if err := json.Unmarshal([]byte(executedCmd.Output), &metric); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"error": "Failed to parse telemetry data: " + err.Error(),
+					})
+					return
+				}
+
+				if metric.DeviceID == "" {
+					metric.DeviceID = deviceID
+				}
+				if metric.RecordedAt.IsZero() {
+					metric.RecordedAt = time.Now()
+				}
+
+				// Guardar en base de datos la medición obtenida a demanda
+				_ = s.db.InsertTelemetry(&metric)
+				_ = s.db.UpdateDeviceStatus(deviceID, "online")
+
+				writeJSON(w, http.StatusOK, metric)
+				return
+			}
+
 			limitStr := r.URL.Query().Get("limit")
 			limit := 20
 			if limitStr != "" {
@@ -263,12 +319,13 @@ func (s *Server) handleMCPTools(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			"name":        "get_device_telemetry",
-			"description": "Obtiene el historial reciente de telemetría de un dispositivo (CPU, RAM, ventanas, procesos).",
+			"description": "Obtiene la telemetría de un dispositivo (CPU, RAM, ventanas, procesos). Soporta historial o medición fresca en vivo a demanda.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo"},
-					"limit":     map[string]interface{}{"type": "integer", "description": "Cantidad de registros"},
+					"limit":     map[string]interface{}{"type": "integer", "description": "Cantidad de registros históricos"},
+					"live":      map[string]interface{}{"type": "boolean", "description": "Si es true, solicita una medición fresca en vivo al dispositivo, la persiste en la base de datos y la entrega."},
 				},
 				"required": []string{"device_id"},
 			},
@@ -351,6 +408,43 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 
 	case "get_device_telemetry":
 		deviceID, _ := req.Arguments["device_id"].(string)
+		isLive, _ := req.Arguments["live"].(bool)
+
+		if isLive {
+			cmd := &models.Command{
+				ID:        uuid.New().String(),
+				DeviceID:  deviceID,
+				Type:      "collect_telemetry",
+				Payload:   map[string]interface{}{},
+				CreatedAt: time.Now(),
+			}
+
+			res, err := s.hub.SendCommand(cmd, 15*time.Second)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "Failed to collect live telemetry: " + err.Error()})
+				return
+			}
+
+			var metric models.TelemetryMetric
+			if err := json.Unmarshal([]byte(res.Output), &metric); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "Failed to parse live telemetry: " + err.Error()})
+				return
+			}
+
+			if metric.DeviceID == "" {
+				metric.DeviceID = deviceID
+			}
+			if metric.RecordedAt.IsZero() {
+				metric.RecordedAt = time.Now()
+			}
+
+			_ = s.db.InsertTelemetry(&metric)
+			_ = s.db.UpdateDeviceStatus(deviceID, "online")
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{"result": metric})
+			return
+		}
+
 		limit := 10
 		if l, ok := req.Arguments["limit"].(float64); ok && l > 0 {
 			limit = int(l)
