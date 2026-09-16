@@ -15,6 +15,7 @@ import com.omni.remote.data.models.DeviceEvent
 import com.omni.remote.data.models.DeviceSystemInfo
 import com.omni.remote.data.models.WSMessage
 import com.omni.remote.data.prefs.PreferencesManager
+import com.omni.remote.workers.TelemetryWorker
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -199,6 +200,12 @@ class ControlSessionManager private constructor(private val context: Context) {
      */
     private fun handleAndroidCommand(commandId: String, command: Command): Boolean {
         when (command.type) {
+            "collect_telemetry", "telemetry" -> {
+                val metric = TelemetryWorker.collect(context)
+                sendResponse(commandId, 0, gson.toJson(metric), null)
+                return true
+            }
+
             "get_notifications" -> {
                 val limit = (command.payload["limit"] as? Number)?.toInt() ?: 50
                 val listener = OmniNotificationListenerService.instance

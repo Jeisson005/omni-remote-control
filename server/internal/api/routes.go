@@ -152,35 +152,16 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if isLive {
-				cmd := &models.Command{
-					ID:        uuid.New().String(),
-					DeviceID:  deviceID,
-					Type:      "collect_telemetry",
-					Payload:   map[string]interface{}{},
-					CreatedAt: time.Now(),
-				}
-
-				executedCmd, err := s.hub.SendCommand(cmd, 15*time.Second)
+				output, err := s.executeDeviceCommand(deviceID, "collect_telemetry", map[string]interface{}{})
 				if err != nil {
 					writeJSON(w, http.StatusBadGateway, map[string]interface{}{
-						"error": "Failed to request live telemetry from device: " + err.Error(),
-					})
-					return
-				}
-
-				if executedCmd.ExitCode != 0 || executedCmd.Output == "" {
-					errMsg := executedCmd.Error
-					if errMsg == "" {
-						errMsg = "telemetry output was empty"
-					}
-					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
-						"error": "Failed to collect live telemetry: " + errMsg,
+						"error": "Failed to collect live telemetry: " + err.Error(),
 					})
 					return
 				}
 
 				var metric models.TelemetryMetric
-				if err := json.Unmarshal([]byte(executedCmd.Output), &metric); err != nil {
+				if err := json.Unmarshal([]byte(output), &metric); err != nil {
 					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
 						"error": "Failed to parse telemetry data: " + err.Error(),
 					})
@@ -957,22 +938,14 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 		isLive, _ := req.Arguments["live"].(bool)
 
 		if isLive {
-			cmd := &models.Command{
-				ID:        uuid.New().String(),
-				DeviceID:  deviceID,
-				Type:      "collect_telemetry",
-				Payload:   map[string]interface{}{},
-				CreatedAt: time.Now(),
-			}
-
-			res, err := s.hub.SendCommand(cmd, 15*time.Second)
+			output, err := s.executeDeviceCommand(deviceID, "collect_telemetry", map[string]interface{}{})
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "Failed to collect live telemetry: " + err.Error()})
 				return
 			}
 
 			var metric models.TelemetryMetric
-			if err := json.Unmarshal([]byte(res.Output), &metric); err != nil {
+			if err := json.Unmarshal([]byte(output), &metric); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "Failed to parse live telemetry: " + err.Error()})
 				return
 			}

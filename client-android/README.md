@@ -13,7 +13,7 @@ Cliente nativo para dispositivos Android diseñado con arquitectura de ultra baj
                               └───────┬───────────────────┬──────┘
                                       │                   │
                      POST /telemetry  │                   │ WS /ws/devices
-                    (Cada 15-30 min)  │                   │ (Bajo demanda)
+                      (Cada 1 hora)   │                   │ (Bajo demanda)
                                       │                   │
 ┌─────────────────────────────────────┼───────────────────┼───────────────────────────┐
 │ DISPOSITIVO ANDROID                 ▼                   ▼                           │
@@ -21,7 +21,7 @@ Cliente nativo para dispositivos Android diseñado con arquitectura de ultra baj
 │ ┌─────────────────────────────┐               ┌──────────────────────────────────┐  │
 │ │      TelemetryWorker        │               │      ControlSessionManager       │  │
 │ │ (WorkManager, Doze-friendly,│               │    (OkHttp WebSocket Client)     │  │
-│ │  BatteryNotLow, 15-30m)     │               └─────────┬──────────────┬─────────┘  │
+│ │  BatteryNotLow, 1 hora)     │               └─────────┬──────────────┬─────────┘  │
 │ └──────────────┬──────────────┘                         │              │            │
 │                │ Recopila:                              ▼              ▼            │
 │                │ - Batería % y estado carga     ┌───────────────┐ ┌────────────────┐│
@@ -45,11 +45,12 @@ Cliente nativo para dispositivos Android diseñado con arquitectura de ultra baj
 
 ## ⚡ Estrategia de Batería y Eficiencia
 
-1. **Telemetría Pasiva en Ventanas de Mantenimiento (`TelemetryWorker`)**:
-   - Programado como `PeriodicWorkRequest` de 15 a 30 minutos.
+1. **Telemetría Pasiva en Ventanas de Mantenimiento (`TelemetryWorker`) y a Demanda**:
+   - Programado como `PeriodicWorkRequest` de **1 hora** (al igual que en Linux y Windows) con ventana flexible de 15 minutos.
    - Aplica restricción `setRequiresBatteryNotLow(true)` y `NetworkType.CONNECTED`.
    - El sistema operativo lo ejecuta de forma agrupada durante las ventanas estándar de mantenimiento de Android sin interrumpir los ciclos profundos de sueño (Doze mode).
    - Entrega los datos mediante HTTP POST a `/api/v1/telemetry`.
+   - **A demanda:** Soporta solicitud de telemetría en vivo vía `GET /api/v1/devices/{id}/telemetry?live=true` o MCP (`get_device_telemetry`). Si el dispositivo está dormido, el servidor lo despierta vía FCM de alta prioridad y extrae la medición al instante.
 
 2. **Receptor de Órdenes Dormido (`OmniFirebaseMessagingService`)**:
    - No mantiene conexiones de red abiertas ni consume CPU en reposo.

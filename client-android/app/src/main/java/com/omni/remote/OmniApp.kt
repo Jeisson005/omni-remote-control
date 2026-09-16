@@ -32,21 +32,21 @@ class OmniApp : Application() {
                 .setRequiresBatteryNotLow(true)
                 .build()
 
-            // Intervalo de 15 minutos (mínimo permitido por Android WorkManager)
+            // Intervalo de 1 hora (al igual que los clientes Linux y Windows)
             val telemetryWorkRequest = PeriodicWorkRequestBuilder<TelemetryWorker>(
-                15, TimeUnit.MINUTES,
-                5, TimeUnit.MINUTES // Flex interval
+                1, TimeUnit.HOURS,
+                15, TimeUnit.MINUTES // Flex interval
             )
                 .setConstraints(constraints)
                 .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 TelemetryWorker.WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 telemetryWorkRequest
             )
 
-            Log.i(TAG, "Periodic telemetry scheduled with WorkManager (15 min interval, battery not low).")
+            Log.i(TAG, "Periodic telemetry scheduled with WorkManager (1 hour interval, battery not low).")
         }
     }
 }
