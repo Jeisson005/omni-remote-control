@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/config"
+	"github.com/Jeisson005/omni-remote-control/client-windows/internal/events"
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/executor"
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/gui"
 	"github.com/Jeisson005/omni-remote-control/client-windows/internal/metrics"
@@ -28,18 +29,25 @@ type AgentClient struct {
 	cfg       *config.Config
 	gui       *gui.WindowsGUIController
 	collector *metrics.WindowsCollector
+	monitor   *events.WindowsMonitor
 	conn      *websocket.Conn
 	connMu    sync.Mutex
 	stopChan  chan struct{}
 }
 
 func NewAgentClient(cfg *config.Config) *AgentClient {
-	return &AgentClient{
+	mon := events.NewMonitor(cfg.DeviceID)
+	client := &AgentClient{
 		cfg:       cfg,
 		gui:       gui.NewGUIController(),
 		collector: metrics.NewCollector(),
+		monitor:   mon,
 		stopChan:  make(chan struct{}),
 	}
+	mon.AddListener(func(ev *events.DeviceEvent) {
+		_ = client.SendEvent(ev)
+	})
+	return client
 }
 
 func (a *AgentClient) Start(ctx context.Context) {
@@ -98,7 +106,14 @@ func (a *AgentClient) connectAndRun(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Iniciar temporizadores de heartbeat y telemetría dinámica
+	// 2. Emitir evento inicial client_started
+	a.monitor.Emit("client_started", "info", "Agente de Windows iniciado y conectado exitosamente", map[string]interface{}{
+		"version":     a.cfg.AgentVersion,
+		"device_name": a.cfg.DeviceName,
+	})
+	go a.monitor.Start(ctx)
+
+	// 3. Iniciar temporizadores de heartbeat y telemetría dinámica
 	heartbeatTicker := time.NewTicker(a.cfg.HeartbeatInterval)
 	defer heartbeatTicker.Stop()
 
@@ -288,4 +303,28 @@ func (a *AgentClient) sendWSMessage(msg *WSMessage) error {
 
 	a.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return a.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func (a *AgentClient) SendEvent(ev *events.DeviceEvent) error {
+	payloadBytes, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	msg := WSMessage{
+		Type:     "event",
+		DeviceID: a.cfg.DeviceID,
+		Payload:  payloadBytes,
+	}
+	return a.sendWSMessage(&msg)
+}
+
+func (a *AgentClient) SendStoppingEvent() {
+	ev := &events.DeviceEvent{
+		DeviceID:  a.cfg.DeviceID,
+		EventType: "client_stopping",
+		Severity:  "info",
+		Message:   "Agente de Windows deteniéndose por señal de apagado",
+		CreatedAt: time.Now().UTC(),
+	}
+	_ = a.SendEvent(ev)
 }

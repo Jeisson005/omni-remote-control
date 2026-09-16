@@ -12,36 +12,40 @@ import (
 )
 
 type SystemInfo struct {
-	DeviceID      string    `json:"device_id"`
-	CPUModel      string    `json:"cpu_model"`
-	CPUCores      int       `json:"cpu_cores"`
-	RAMTotalBytes uint64    `json:"ram_total_bytes"`
-	DiskTotalBytes uint64   `json:"disk_total_bytes"`
-	OSVersion     string    `json:"os_version"`
-	KernelVersion string    `json:"kernel_version"`
-	Arch          string    `json:"arch"`
-	IPAddress     string    `json:"ip_address"`
-	MACAddress    string    `json:"mac_address"`
-	Timezone      string    `json:"timezone"`
-	AgentVersion  string    `json:"agent_version"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	DeviceID       string    `json:"device_id"`
+	CPUModel       string    `json:"cpu_model"`
+	CPUCores       int       `json:"cpu_cores"`
+	RAMTotalBytes  uint64    `json:"ram_total_bytes"`
+	DiskTotalBytes uint64    `json:"disk_total_bytes"`
+	OSVersion      string    `json:"os_version"`
+	KernelVersion  string    `json:"kernel_version"`
+	Arch           string    `json:"arch"`
+	IPAddress      string    `json:"ip_address"`
+	MACAddress     string    `json:"mac_address"`
+	Timezone       string    `json:"timezone"`
+	AgentVersion   string    `json:"agent_version"`
+	PublicIP       string    `json:"public_ip,omitempty"`
+	NetworkName    string    `json:"network_name,omitempty"`
+	UptimeSeconds  uint64    `json:"uptime_seconds,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func Collect(deviceID, agentVersion string) *SystemInfo {
 	info := &SystemInfo{
-		DeviceID:     deviceID,
-		Arch:         runtime.GOARCH,
-		AgentVersion: agentVersion,
-		UpdatedAt:    time.Now().UTC(),
-		Timezone:     time.Now().Location().String(),
-		CPUCores:     runtime.NumCPU(),
+		DeviceID:      deviceID,
+		Arch:          runtime.GOARCH,
+		AgentVersion:  agentVersion,
+		UpdatedAt:     time.Now().UTC(),
+		Timezone:      time.Now().Location().String(),
+		CPUCores:      runtime.NumCPU(),
+		UptimeSeconds: win32.GetTickCount64() / 1000,
 	}
 
 	info.CPUModel = getCPUModel()
 	info.RAMTotalBytes = getRAMTotal()
 	info.DiskTotalBytes = getDiskTotal()
 	info.OSVersion, info.KernelVersion = getWindowsVersion()
-	info.IPAddress, info.MACAddress = getNetworkInfo()
+	info.IPAddress, info.MACAddress, info.NetworkName = getNetworkInfoWithIface()
 
 	return info
 }
@@ -86,10 +90,10 @@ func getWindowsVersion() (osVer, kernelVer string) {
 	return osVer, kernelVer
 }
 
-func getNetworkInfo() (string, string) {
+func getNetworkInfoWithIface() (string, string, string) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return "127.0.0.1", ""
+		return "127.0.0.1", "", "lo"
 	}
 
 	for _, iface := range interfaces {
@@ -112,10 +116,10 @@ func getNetworkInfo() (string, string) {
 			}
 
 			if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
-				return ip.String(), iface.HardwareAddr.String()
+				return ip.String(), iface.HardwareAddr.String(), iface.Name
 			}
 		}
 	}
 
-	return "127.0.0.1", ""
+	return "127.0.0.1", "", "lo"
 }

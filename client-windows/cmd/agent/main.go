@@ -30,7 +30,8 @@ func main() {
 
 	go func() {
 		<-quit
-		log.Println("Received termination signal, shutting down Windows agent...")
+		log.Println("Received termination signal, sending stopping event...")
+		agent.SendStoppingEvent()
 		cancel()
 	}()
 

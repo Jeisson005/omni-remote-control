@@ -167,6 +167,32 @@ func (h *Hub) handleMessage(devConn *DeviceConn, msg *models.WSMessage) {
 		}
 		_ = h.db.UpdateDeviceStatus(devConn.DeviceID, "online")
 
+	case "event":
+		var ev models.DeviceEvent
+		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
+			log.Printf("Failed to unmarshal event payload: %v", err)
+			return
+		}
+
+		if ev.DeviceID == "" {
+			ev.DeviceID = devConn.DeviceID
+		}
+		if ev.CreatedAt.IsZero() {
+			ev.CreatedAt = time.Now()
+		}
+
+		if err := h.db.InsertEvent(&ev); err != nil {
+			log.Printf("Error storing event: %v", err)
+		} else {
+			log.Printf("Device event recorded [%s]: %s (%s) - %s", ev.DeviceID, ev.EventType, ev.Severity, ev.Message)
+		}
+
+		if ev.EventType == "client_stopping" {
+			_ = h.db.UpdateDeviceStatus(devConn.DeviceID, "offline")
+		} else {
+			_ = h.db.UpdateDeviceStatus(devConn.DeviceID, "online")
+		}
+
 	case "command_response":
 		var cmd models.Command
 		if err := json.Unmarshal(msg.Payload, &cmd); err != nil {

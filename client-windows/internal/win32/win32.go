@@ -26,6 +26,8 @@ var (
 	procGetSystemTimes       = kernel32.NewProc("GetSystemTimes")
 	procGetDiskFreeSpaceExW  = kernel32.NewProc("GetDiskFreeSpaceExW")
 	procGetNativeSystemInfo  = kernel32.NewProc("GetNativeSystemInfo")
+	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
+	procGetTickCount64       = kernel32.NewProc("GetTickCount64")
 )
 
 const (
@@ -83,6 +85,25 @@ type SYSTEM_INFO struct {
 	AllocationGranularity     uint32
 	ProcessorLevel            uint16
 	ProcessorRevision         uint16
+}
+
+type SYSTEM_POWER_STATUS struct {
+	ACLineStatus        byte
+	BatteryFlag         byte
+	BatteryLifePercent  byte
+	SystemStatusFlag    byte
+	BatteryLifeTime     uint32
+	BatteryFullLifeTime uint32
+}
+
+func GetSystemPowerStatus(sps *SYSTEM_POWER_STATUS) bool {
+	ret, _, _ := procGetSystemPowerStatus.Call(uintptr(unsafe.Pointer(sps)))
+	return ret != 0
+}
+
+func GetTickCount64() uint64 {
+	ret, _, _ := procGetTickCount64.Call()
+	return uint64(ret)
 }
 
 // SetCursorPosition mueve el cursor a las coordenadas X, Y

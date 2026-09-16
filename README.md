@@ -30,6 +30,10 @@ Para garantizar un monitoreo integral sin saturar la red ni la base de datos, la
    - Porcentaje de uso de CPU (cálculo delta en tiempo real).
    - Memoria RAM utilizada (MB y porcentaje de ocupación).
    - Porcentaje de uso del disco principal.
+   - **Nivel de batería (`battery_pct`)** y estado de carga (`is_charging`).
+   - **Nombre de la red actual (`network_name`)**: SSID Wi-Fi (ej. "MiOficina-5G") o interfaz activa (ej. "eth0", "Wi-Fi").
+   - **Dirección IP pública (`public_ip`)**: Resolución remota con caché local de 15 minutos.
+   - **Tiempo de actividad (`uptime_seconds`)**: Segundos de encendido del sistema operativo.
    - Lista de ventanas activas/visibles con sus IDs y títulos (`wmctrl -l` en Linux, `EnumWindows` en Windows).
    - Top procesos del sistema ordenados por consumo de CPU y memoria (`ps` en Linux, `tasklist` en Windows).
 
@@ -37,6 +41,13 @@ Para garantizar un monitoreo integral sin saturar la red ni la base de datos, la
    - Permite solicitar en cualquier momento el estado actual del dispositivo en tiempo real.
    - El servidor solicita al agente cliente vía WebSocket que recopile las métricas en ese instante exacto.
    - El resultado se **persiste automáticamente en PostgreSQL** en la tabla `telemetry_metrics` y se **entrega de inmediato en la respuesta HTTP o del MCP tool**.
+
+4. **Eventos de Telemetría y Ciclo de Vida (`device_events`):**
+   - `client_started`: Emitido al iniciar el software o encender el agente cliente, reportando uptime, red y versión.
+   - `client_stopping`: Emitido al apagar o reiniciar el equipo de forma limpia (capturando `SIGINT`, `SIGTERM` o cierre de servicio).
+   - `network_connected` / `network_disconnected`: Reporta desconexiones y recuperaciones de red local y servidor.
+   - `network_changed`: Reporta variaciones de red activa (cambio de SSID Wi-Fi o cambio de interfaz/IP).
+   - `battery_low`: Emite advertencia cuando la batería cae al 20% o menos en modo descarga.
 
 ---
 
@@ -155,7 +166,34 @@ curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/telemetry?live=true" |
 curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/telemetry/live" | python3 -m json.tool
 ```
 
-### 3. Ejecutar Comando en Terminal Remota
+### 3. Consultar Eventos de Telemetría y Ciclo de Vida
+```bash
+# Listar últimos eventos (arranque, apagado, red, batería)
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/events" | python3 -m json.tool
+
+# Filtrar por tipo de evento
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/events?type=client_started" | python3 -m json.tool
+```
+
+### 4. Ingesta Directa de Telemetría vía HTTP (Android WorkManager)
+```bash
+curl -s -X POST http://localhost:8090/api/v1/telemetry \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": "android-mi-dispositivo",
+    "cpu_usage_pct": 10.2,
+    "ram_usage_pct": 45.0,
+    "ram_used_bytes": 1800000000,
+    "disk_usage_pct": 32.5,
+    "battery_pct": 85.0,
+    "is_charging": false,
+    "network_name": "Wi-Fi (Oficina-5G)",
+    "public_ip": "186.144.41.3",
+    "uptime_seconds": 36000
+  }' | python3 -m json.tool
+```
+
+### 5. Ejecutar Comando en Terminal Remota
 ```bash
 curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
   -H "Content-Type: application/json" \
@@ -167,7 +205,7 @@ curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
   }' | python3 -m json.tool
 ```
 
-### 4. Control de GUI Remota (Ratón, Teclado y Ventanas)
+### 6. Control de GUI Remota (Ratón, Teclado y Ventanas)
 
 * **Listar ventanas visibles:**
 ```bash
@@ -199,7 +237,7 @@ curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
   }' | python3 -m json.tool
 ```
 
-### 5. Captura de Pantalla a Demanda (Screenshots)
+### 7. Captura de Pantalla a Demanda (Screenshots)
 
 Obtén una captura en tiempo real de la pantalla del cliente (Linux o Windows) directamente como imagen PNG:
 
@@ -221,8 +259,21 @@ curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
 
 El servidor expone herramientas para agentes de Inteligencia Artificial (Claude, Antigravity, Cursor, etc.):
 
-- `GET /api/v1/mcp/tools`: Lista las herramientas disponibles (`list_devices`, `get_device_telemetry`, `execute_shell_command`, `control_gui`).
+- `GET /api/v1/mcp/tools`: Lista las herramientas disponibles (`list_devices`, `get_device_telemetry`, `get_device_events`, `execute_shell_command`, `control_gui`, `get_device_screenshot`).
 - `POST /api/v1/mcp/tools/call`: Ejecución directa de herramientas por parte de agentes IA.
+
+Ejemplo de llamada MCP (Consultar eventos de dispositivo):
+```bash
+curl -s -X POST http://localhost:8090/api/v1/mcp/tools/call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "get_device_events",
+    "arguments": {
+      "device_id": "<DEVICE_ID>",
+      "limit": 10
+    }
+  }' | python3 -m json.tool
+```
 
 Ejemplo de llamada MCP (Ejecución remota de comandos):
 ```bash
@@ -261,11 +312,12 @@ sudo OMNI_SERVER_URL="ws://<IP_SERVIDOR>:8090/ws/devices" ./client-linux/install
 ```
 
 El instalador:
-1. Detecta la distribución (Debian, Ubuntu, RHEL, Fedora, Arch, Alpine).
-2. Instala automáticamente `xdotool`, `wmctrl`, `curl`, `jq` y `procps`.
-3. Crea directorios en `/etc/omni-agent` y `/var/lib/omni-agent`.
-4. Genera y preserva un identificador de hardware único para el dispositivo.
-5. Configura e inicia el servicio en `systemd` (`omni-agent.service`).
+1. Detecta automáticamente el gestor de paquetes de la distribución.
+2. Instala utilidades necesarias (`xdotool`, `wmctrl`, `procps`, `curl`, `scrot`).
+3. Genera un identificador único y persistente en `/etc/omni-agent/device-id` (a partir de `/etc/machine-id` o DMI UUID).
+4. Configura el archivo `/etc/omni-agent/config.env`.
+5. Compila/instala el binario en `/usr/local/bin/omni-agent`.
+6. Crea, habilita e inicia el servicio persistente `systemd` (`omni-agent.service`) para arranque automático junto con el sistema.
 
 ---
 
@@ -290,3 +342,36 @@ El instalador en PowerShell:
 2. Genera y guarda un `device-id` único a partir del UUID de la BIOS/Motherboard.
 3. Copia el binario `omni-agent.exe`.
 4. Registra e inicia una Tarea Programada de Windows (`Scheduled Task`) para arranque automático en segundo plano con privilegios máximos del sistema.
+
+---
+
+## 📱 Cliente Android (Kotlin / Doze-Friendly)
+
+Ubicado en `client-android/`, desarrollado en **Kotlin nativo** con un enfoque de ultra bajo consumo de batería y sin conexión persistente obligatoria:
+
+1. **Telemetría Pasiva con `WorkManager`**:
+   - Tarea periódica cada 15 a 30 minutos restringida por `setRequiresBatteryNotLow(true)`.
+   - Recolecta nivel de batería, estado de carga, consumo de RAM, ocupación de almacenamiento, nombre/SSID de la red, IP pública y tiempo de actividad (uptime).
+   - Entrega los datos mediante HTTP POST a `/api/v1/telemetry` respetando los ciclos profundos de reposo del sistema (**Doze mode**).
+
+2. **Despertador Remoto con Firebase Cloud Messaging (`FCM`)**:
+   - El dispositivo duerme sin conexiones abiertas de WebSocket ni consumo activo de CPU.
+   - Al requerirse control en vivo, el backend envía un push FCM de alta prioridad (`action: "START_CONTROL"`).
+   - El servicio adquiere un `WakeLock` temporal para encender la pantalla si está apagada y abre la sesión WebSocket.
+
+3. **Control y Ejecución con `AccessibilityService`**:
+   - **Clics y Toques**: Ejecución precisa con `dispatchGesture`.
+   - **Deslizamientos (`swipe`)**: Gesto continuo con coordenadas de inicio, fin y duración.
+   - **Entrada de Texto**: Inyección mediante `ACTION_SET_TEXT` en el nodo de entrada activo o especificado.
+   - **Acciones Globales**: Navegación de sistema (`Back`, `Home`, `Recents`, `Notifications`).
+   - **Inspección de Pantalla (`get_tree`)**: Extrae el árbol jerárquico de nodos UI visibles para automatizaciones de IA.
+
+4. **Watchdog de Inactividad (60 Segundos)**:
+   - Si no se reciben órdenes durante 60 segundos (o si se envía `action: "STOP"`), la sesión WebSocket se desconecta, se libera el `WakeLock` y el dispositivo vuelve al modo Doze.
+
+### Compilación y Despliegue de Android:
+```bash
+cd client-android
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```

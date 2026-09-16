@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"math"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -29,14 +32,19 @@ type ProcessInfo struct {
 }
 
 type TelemetryMetric struct {
-	DeviceID     string        `json:"device_id"`
-	CPUUsagePct  float64       `json:"cpu_usage_pct"`
-	RAMUsagePct  float64       `json:"ram_usage_pct"`
-	RAMUsedBytes uint64        `json:"ram_used_bytes"`
-	DiskUsagePct float64       `json:"disk_usage_pct"`
-	OpenWindows  []WindowInfo  `json:"open_windows"`
-	TopProcesses []ProcessInfo `json:"top_processes"`
-	RecordedAt   time.Time     `json:"recorded_at"`
+	DeviceID      string        `json:"device_id"`
+	CPUUsagePct   float64       `json:"cpu_usage_pct"`
+	RAMUsagePct   float64       `json:"ram_usage_pct"`
+	RAMUsedBytes  uint64        `json:"ram_used_bytes"`
+	DiskUsagePct  float64       `json:"disk_usage_pct"`
+	BatteryPct    *float64      `json:"battery_pct,omitempty"`
+	IsCharging    *bool         `json:"is_charging,omitempty"`
+	NetworkName   string        `json:"network_name,omitempty"`
+	PublicIP      string        `json:"public_ip,omitempty"`
+	UptimeSeconds uint64        `json:"uptime_seconds,omitempty"`
+	OpenWindows   []WindowInfo  `json:"open_windows"`
+	TopProcesses  []ProcessInfo `json:"top_processes"`
+	RecordedAt    time.Time     `json:"recorded_at"`
 }
 
 type WindowsCollector struct {
@@ -61,16 +69,25 @@ func (c *WindowsCollector) Collect(deviceID string) *TelemetryMetric {
 	diskPct := getDiskUsage()
 	windows := getOpenWindows()
 	processes := getTopProcesses()
+	batPct, isCharging := getBattery()
+	netName := getNetworkName()
+	pubIP := getPublicIPCached()
+	uptime := getUptimeSeconds()
 
 	return &TelemetryMetric{
-		DeviceID:     deviceID,
-		CPUUsagePct:  round(cpuPct, 2),
-		RAMUsagePct:  round(ramPct, 2),
-		RAMUsedBytes: ramUsed,
-		DiskUsagePct: round(diskPct, 2),
-		OpenWindows:  windows,
-		TopProcesses: processes,
-		RecordedAt:   time.Now().UTC(),
+		DeviceID:      deviceID,
+		CPUUsagePct:   round(cpuPct, 2),
+		RAMUsagePct:   round(ramPct, 2),
+		RAMUsedBytes:  ramUsed,
+		DiskUsagePct:  round(diskPct, 2),
+		BatteryPct:    batPct,
+		IsCharging:    isCharging,
+		NetworkName:   netName,
+		PublicIP:      pubIP,
+		UptimeSeconds: uptime,
+		OpenWindows:   windows,
+		TopProcesses:  processes,
+		RecordedAt:    time.Now().UTC(),
 	}
 }
 
@@ -200,4 +217,104 @@ func getTopProcesses() []ProcessInfo {
 func round(val float64, precision int) float64 {
 	ratio := math.Pow(10, float64(precision))
 	return math.Round(val*ratio) / ratio
+}
+
+var (
+	cachedWinPublicIP     string
+	cachedWinPublicIPTime time.Time
+	winPublicIPMu         sync.Mutex
+)
+
+func getBattery() (*float64, *bool) {
+	var sps win32.SYSTEM_POWER_STATUS
+	if !win32.GetSystemPowerStatus(&sps) {
+		return nil, nil
+	}
+
+	if sps.BatteryLifePercent > 100 {
+		isOnline := sps.ACLineStatus == 1
+		return nil, &isOnline
+	}
+
+	pct := float64(sps.BatteryLifePercent)
+	isCharging := sps.ACLineStatus == 1
+	return &pct, &isCharging
+}
+
+func getNetworkName() string {
+	// Intentar obtener SSID Wi-Fi con netsh
+	cmd := exec.Command("netsh", "wlan", "show", "interfaces")
+	out, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "SSID") && !strings.HasPrefix(trimmed, "BSSID") {
+				parts := strings.Split(trimmed, ":")
+				if len(parts) > 1 {
+					ssid := strings.TrimSpace(parts[1])
+					if ssid != "" {
+						return ssid
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback a interfaz de red activa
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ipNet *net.IPNet
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ipNet = v
+				case *net.IPAddr:
+					ipNet = &net.IPNet{IP: v.IP, Mask: net.CIDRMask(32, 32)}
+				}
+				if ipNet != nil && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+					return iface.Name
+				}
+			}
+		}
+	}
+	return "Ethernet"
+}
+
+func getPublicIPCached() string {
+	winPublicIPMu.Lock()
+	defer winPublicIPMu.Unlock()
+
+	if cachedWinPublicIP != "" && time.Since(cachedWinPublicIPTime) < 15*time.Minute {
+		return cachedWinPublicIP
+	}
+
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err == nil {
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err == nil {
+			ipStr := strings.TrimSpace(string(body))
+			if ipStr != "" {
+				cachedWinPublicIP = ipStr
+				cachedWinPublicIPTime = time.Now()
+				return cachedWinPublicIP
+			}
+		}
+	}
+
+	return cachedWinPublicIP
+}
+
+func getUptimeSeconds() uint64 {
+	return win32.GetTickCount64() / 1000
 }

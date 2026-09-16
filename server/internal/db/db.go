@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Jeisson005/omni-remote-control/server/internal/models"
@@ -98,6 +99,24 @@ func (d *DB) migrate() error {
 			completed_at TIMESTAMPTZ
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_commands_device_created ON commands(device_id, created_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS device_events (
+			id BIGSERIAL PRIMARY KEY,
+			device_id VARCHAR(128) REFERENCES devices(id) ON DELETE CASCADE,
+			event_type VARCHAR(64) NOT NULL,
+			severity VARCHAR(32) NOT NULL DEFAULT 'info',
+			message TEXT NOT NULL DEFAULT '',
+			metadata JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_device_events_device_time ON device_events(device_id, created_at DESC);`,
+		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS battery_pct NUMERIC(5,2);`,
+		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS is_charging BOOLEAN;`,
+		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS network_name VARCHAR(128);`,
+		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64);`,
+		`ALTER TABLE telemetry_metrics ADD COLUMN IF NOT EXISTS uptime_seconds BIGINT;`,
+		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS network_name VARCHAR(128);`,
+		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64);`,
+		`ALTER TABLE device_system_info ADD COLUMN IF NOT EXISTS uptime_seconds BIGINT;`,
 	}
 
 	for _, q := range queries {
@@ -135,8 +154,9 @@ func (d *DB) UpsertSystemInfo(info *models.DeviceSystemInfo) error {
 	query := `
 		INSERT INTO device_system_info (
 			device_id, cpu_model, cpu_cores, ram_total_bytes, disk_total_bytes,
-			os_version, kernel_version, arch, ip_address, mac_address, timezone, agent_version, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+			os_version, kernel_version, arch, ip_address, mac_address, timezone, agent_version,
+			public_ip, network_name, uptime_seconds, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
 		ON CONFLICT (device_id) DO UPDATE SET
 			cpu_model = EXCLUDED.cpu_model,
 			cpu_cores = EXCLUDED.cpu_cores,
@@ -149,17 +169,49 @@ func (d *DB) UpsertSystemInfo(info *models.DeviceSystemInfo) error {
 			mac_address = EXCLUDED.mac_address,
 			timezone = EXCLUDED.timezone,
 			agent_version = EXCLUDED.agent_version,
+			public_ip = COALESCE(NULLIF(EXCLUDED.public_ip, ''), device_system_info.public_ip),
+			network_name = COALESCE(NULLIF(EXCLUDED.network_name, ''), device_system_info.network_name),
+			uptime_seconds = EXCLUDED.uptime_seconds,
 			updated_at = NOW();
 	`
 	_, err := d.conn.Exec(query,
 		info.DeviceID, info.CPUModel, info.CPUCores, info.RAMTotalBytes, info.DiskTotalBytes,
 		info.OSVersion, info.KernelVersion, info.Arch, info.IPAddress, info.MACAddress,
-		info.Timezone, info.AgentVersion,
+		info.Timezone, info.AgentVersion, info.PublicIP, info.NetworkName, info.UptimeSeconds,
 	)
 	return err
 }
 
+func (d *DB) ensureDeviceExists(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	osType := "unknown"
+	platform := "Generic"
+	if strings.HasPrefix(deviceID, "android-") {
+		osType = "android"
+		platform = "Android Mobile"
+	} else if strings.HasPrefix(deviceID, "win-") {
+		osType = "windows"
+		platform = "Windows Desktop"
+	} else if strings.HasPrefix(deviceID, "linux-") {
+		osType = "linux"
+		platform = "Linux Machine"
+	}
+
+	_ = d.UpsertDevice(&models.Device{
+		ID:       deviceID,
+		Name:     deviceID,
+		Hostname: deviceID,
+		OS:       osType,
+		Platform: platform,
+		Status:   "online",
+	})
+}
+
 func (d *DB) InsertTelemetry(m *models.TelemetryMetric) error {
+	d.ensureDeviceExists(m.DeviceID)
+
 	windowsJSON, err := json.Marshal(m.OpenWindows)
 	if err != nil {
 		windowsJSON = []byte("[]")
@@ -177,21 +229,90 @@ func (d *DB) InsertTelemetry(m *models.TelemetryMetric) error {
 	query := `
 		INSERT INTO telemetry_metrics (
 			device_id, cpu_usage_pct, ram_usage_pct, ram_used_bytes, disk_usage_pct,
+			battery_pct, is_charging, network_name, public_ip, uptime_seconds,
 			open_windows, top_processes, recorded_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`
 	_, err = d.conn.Exec(query,
 		m.DeviceID, m.CPUUsagePct, m.RAMUsagePct, m.RAMUsedBytes, m.DiskUsagePct,
+		m.BatteryPct, m.IsCharging, m.NetworkName, m.PublicIP, m.UptimeSeconds,
 		windowsJSON, procJSON, recordedAt,
 	)
 	return err
+}
+
+func (d *DB) InsertEvent(ev *models.DeviceEvent) error {
+	d.ensureDeviceExists(ev.DeviceID)
+
+	metadataJSON, err := json.Marshal(ev.Metadata)
+	if err != nil {
+		metadataJSON = []byte("{}")
+	}
+
+	createdAt := ev.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	query := `
+		INSERT INTO device_events (device_id, event_type, severity, message, metadata, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`
+	_, err = d.conn.Exec(query, ev.DeviceID, ev.EventType, ev.Severity, ev.Message, metadataJSON, createdAt)
+	return err
+}
+
+func (d *DB) GetEvents(deviceID, eventType string, limit int) ([]models.DeviceEvent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	var rows *sql.Rows
+	var err error
+	if eventType != "" {
+		query := `
+			SELECT id, device_id, event_type, severity, message, metadata, created_at
+			FROM device_events
+			WHERE device_id = $1 AND event_type = $2
+			ORDER BY created_at DESC
+			LIMIT $3
+		`
+		rows, err = d.conn.Query(query, deviceID, eventType, limit)
+	} else {
+		query := `
+			SELECT id, device_id, event_type, severity, message, metadata, created_at
+			FROM device_events
+			WHERE device_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2
+		`
+		rows, err = d.conn.Query(query, deviceID, limit)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []models.DeviceEvent
+	for rows.Next() {
+		var ev models.DeviceEvent
+		var metaJSON []byte
+		if err := rows.Scan(&ev.ID, &ev.DeviceID, &ev.EventType, &ev.Severity, &ev.Message, &metaJSON, &ev.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metaJSON, &ev.Metadata)
+		events = append(events, ev)
+	}
+	return events, nil
 }
 
 func (d *DB) GetDevices() ([]models.Device, error) {
 	query := `
 		SELECT d.id, d.name, d.hostname, d.os, d.platform, d.status, d.first_seen_at, d.last_seen_at,
 		       s.cpu_model, s.cpu_cores, s.ram_total_bytes, s.disk_total_bytes,
-		       s.os_version, s.kernel_version, s.arch, s.ip_address, s.mac_address, s.timezone, s.agent_version, s.updated_at
+		       s.os_version, s.kernel_version, s.arch, s.ip_address, s.mac_address, s.timezone, s.agent_version,
+		       s.public_ip, s.network_name, s.uptime_seconds, s.updated_at
 		FROM devices d
 		LEFT JOIN device_system_info s ON d.id = s.device_id
 		ORDER BY d.last_seen_at DESC
@@ -207,16 +328,16 @@ func (d *DB) GetDevices() ([]models.Device, error) {
 		var dev models.Device
 		var s models.DeviceSystemInfo
 		var (
-			cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer sql.NullString
-			cpuCores                                                              sql.NullInt64
-			ramTotal, diskTotal                                                   sql.NullInt64
-			sysUpdatedAt                                                          sql.NullTime
+			cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer, pubIP, netName sql.NullString
+			cpuCores, ramTotal, diskTotal, uptimeSec                                              sql.NullInt64
+			sysUpdatedAt                                                                         sql.NullTime
 		)
 
 		err := rows.Scan(
 			&dev.ID, &dev.Name, &dev.Hostname, &dev.OS, &dev.Platform, &dev.Status, &dev.FirstSeenAt, &dev.LastSeenAt,
 			&cpuModel, &cpuCores, &ramTotal, &diskTotal,
-			&osVersion, &kernelVersion, &arch, &ip, &mac, &timezone, &agentVer, &sysUpdatedAt,
+			&osVersion, &kernelVersion, &arch, &ip, &mac, &timezone, &agentVer,
+			&pubIP, &netName, &uptimeSec, &sysUpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -235,6 +356,9 @@ func (d *DB) GetDevices() ([]models.Device, error) {
 			s.MACAddress = mac.String
 			s.Timezone = timezone.String
 			s.AgentVersion = agentVer.String
+			s.PublicIP = pubIP.String
+			s.NetworkName = netName.String
+			s.UptimeSeconds = uint64(uptimeSec.Int64)
 			s.UpdatedAt = sysUpdatedAt.Time
 			dev.SystemInfo = &s
 		}
@@ -249,7 +373,8 @@ func (d *DB) GetDevice(id string) (*models.Device, error) {
 	query := `
 		SELECT d.id, d.name, d.hostname, d.os, d.platform, d.status, d.first_seen_at, d.last_seen_at,
 		       s.cpu_model, s.cpu_cores, s.ram_total_bytes, s.disk_total_bytes,
-		       s.os_version, s.kernel_version, s.arch, s.ip_address, s.mac_address, s.timezone, s.agent_version, s.updated_at
+		       s.os_version, s.kernel_version, s.arch, s.ip_address, s.mac_address, s.timezone, s.agent_version,
+		       s.public_ip, s.network_name, s.uptime_seconds, s.updated_at
 		FROM devices d
 		LEFT JOIN device_system_info s ON d.id = s.device_id
 		WHERE d.id = $1
@@ -259,16 +384,16 @@ func (d *DB) GetDevice(id string) (*models.Device, error) {
 	var dev models.Device
 	var s models.DeviceSystemInfo
 	var (
-		cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer sql.NullString
-		cpuCores                                                              sql.NullInt64
-		ramTotal, diskTotal                                                   sql.NullInt64
-		sysUpdatedAt                                                          sql.NullTime
+		cpuModel, osVersion, kernelVersion, arch, ip, mac, timezone, agentVer, pubIP, netName sql.NullString
+		cpuCores, ramTotal, diskTotal, uptimeSec                                              sql.NullInt64
+		sysUpdatedAt                                                                         sql.NullTime
 	)
 
 	err := row.Scan(
 		&dev.ID, &dev.Name, &dev.Hostname, &dev.OS, &dev.Platform, &dev.Status, &dev.FirstSeenAt, &dev.LastSeenAt,
 		&cpuModel, &cpuCores, &ramTotal, &diskTotal,
-		&osVersion, &kernelVersion, &arch, &ip, &mac, &timezone, &agentVer, &sysUpdatedAt,
+		&osVersion, &kernelVersion, &arch, &ip, &mac, &timezone, &agentVer,
+		&pubIP, &netName, &uptimeSec, &sysUpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -290,6 +415,9 @@ func (d *DB) GetDevice(id string) (*models.Device, error) {
 		s.MACAddress = mac.String
 		s.Timezone = timezone.String
 		s.AgentVersion = agentVer.String
+		s.PublicIP = pubIP.String
+		s.NetworkName = netName.String
+		s.UptimeSeconds = uint64(uptimeSec.Int64)
 		s.UpdatedAt = sysUpdatedAt.Time
 		dev.SystemInfo = &s
 	}
@@ -303,6 +431,7 @@ func (d *DB) GetTelemetry(deviceID string, limit int) ([]models.TelemetryMetric,
 	}
 	query := `
 		SELECT id, device_id, cpu_usage_pct, ram_usage_pct, ram_used_bytes, disk_usage_pct,
+		       battery_pct, is_charging, network_name, public_ip, uptime_seconds,
 		       open_windows, top_processes, recorded_at
 		FROM telemetry_metrics
 		WHERE device_id = $1
@@ -318,14 +447,39 @@ func (d *DB) GetTelemetry(deviceID string, limit int) ([]models.TelemetryMetric,
 	var list []models.TelemetryMetric
 	for rows.Next() {
 		var m models.TelemetryMetric
-		var windowsJSON, procJSON []byte
+		var (
+			batteryPct                  sql.NullFloat64
+			isCharging                  sql.NullBool
+			networkName, publicIP       sql.NullString
+			uptimeSec                   sql.NullInt64
+			windowsJSON, procJSON       []byte
+		)
 
 		err := rows.Scan(
 			&m.ID, &m.DeviceID, &m.CPUUsagePct, &m.RAMUsagePct, &m.RAMUsedBytes, &m.DiskUsagePct,
+			&batteryPct, &isCharging, &networkName, &publicIP, &uptimeSec,
 			&windowsJSON, &procJSON, &m.RecordedAt,
 		)
 		if err != nil {
 			return nil, err
+		}
+
+		if batteryPct.Valid {
+			val := batteryPct.Float64
+			m.BatteryPct = &val
+		}
+		if isCharging.Valid {
+			val := isCharging.Bool
+			m.IsCharging = &val
+		}
+		if networkName.Valid {
+			m.NetworkName = networkName.String
+		}
+		if publicIP.Valid {
+			m.PublicIP = publicIP.String
+		}
+		if uptimeSec.Valid {
+			m.UptimeSeconds = uint64(uptimeSec.Int64)
 		}
 
 		_ = json.Unmarshal(windowsJSON, &m.OpenWindows)

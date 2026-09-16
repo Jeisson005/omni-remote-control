@@ -41,6 +41,30 @@ func (s *Server) SetupRoutes() http.Handler {
 	mux.HandleFunc("/api/v1/devices", s.handleDevices)
 	mux.HandleFunc("/api/v1/devices/", s.handleDeviceSubroutes)
 	mux.HandleFunc("/api/v1/commands/", s.handleCommands)
+	mux.HandleFunc("/api/v1/telemetry", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var metric models.TelemetryMetric
+		if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid telemetry payload: " + err.Error()})
+			return
+		}
+		if metric.DeviceID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id is required"})
+			return
+		}
+		if metric.RecordedAt.IsZero() {
+			metric.RecordedAt = time.Now()
+		}
+		if err := s.db.InsertTelemetry(&metric); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to store telemetry: " + err.Error()})
+			return
+		}
+		_ = s.db.UpdateDeviceStatus(metric.DeviceID, "online")
+		writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "success", "metric": metric})
+	})
 
 	// MCP Tools metadata & invocation
 	mux.HandleFunc("/api/v1/mcp/tools", s.handleMCPTools)
@@ -187,6 +211,64 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, metrics)
+			return
+		} else if r.Method == http.MethodPost {
+			var metric models.TelemetryMetric
+			if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid telemetry payload: " + err.Error()})
+				return
+			}
+			if metric.DeviceID == "" {
+				metric.DeviceID = deviceID
+			}
+			if metric.RecordedAt.IsZero() {
+				metric.RecordedAt = time.Now()
+			}
+			if err := s.db.InsertTelemetry(&metric); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to store telemetry: " + err.Error()})
+				return
+			}
+			_ = s.db.UpdateDeviceStatus(deviceID, "online")
+			writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "success", "metric": metric})
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
+	case "events":
+		if r.Method == http.MethodGet {
+			limitStr := r.URL.Query().Get("limit")
+			limit := 50
+			if limitStr != "" {
+				if l, err := strconv.Atoi(limitStr); err == nil {
+					limit = l
+				}
+			}
+			eventType := r.URL.Query().Get("type")
+			events, err := s.db.GetEvents(deviceID, eventType, limit)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, events)
+			return
+		} else if r.Method == http.MethodPost {
+			var ev models.DeviceEvent
+			if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid event payload: " + err.Error()})
+				return
+			}
+			if ev.DeviceID == "" {
+				ev.DeviceID = deviceID
+			}
+			if ev.CreatedAt.IsZero() {
+				ev.CreatedAt = time.Now()
+			}
+			if err := s.db.InsertEvent(&ev); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to store event: " + err.Error()})
+				return
+			}
+			_ = s.db.UpdateDeviceStatus(deviceID, "online")
+			writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "success", "event": ev})
 			return
 		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -371,6 +453,19 @@ func (s *Server) handleMCPTools(w http.ResponseWriter, r *http.Request) {
 				"required": []string{"device_id"},
 			},
 		},
+		{
+			"name":        "get_device_events",
+			"description": "Consulta eventos de ciclo de vida y red de un dispositivo (inicio, apagado, desconexiones, cambios de red, alertas de batería).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id":  map[string]interface{}{"type": "string", "description": "ID del dispositivo"},
+					"event_type": map[string]interface{}{"type": "string", "description": "Filtrar por tipo de evento (ej. client_started, client_stopping, network_changed, battery_low)"},
+					"limit":      map[string]interface{}{"type": "integer", "description": "Cantidad máxima de eventos (default 20)"},
+				},
+				"required": []string{"device_id"},
+			},
+		},
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tools": tools})
@@ -521,6 +616,20 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 				"image_base64": res.Output,
 			},
 		})
+
+	case "get_device_events":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		eventType, _ := req.Arguments["event_type"].(string)
+		limit := 20
+		if l, ok := req.Arguments["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+		events, err := s.db.GetEvents(deviceID, eventType, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"result": events})
 
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Unknown tool"})

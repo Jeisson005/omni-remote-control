@@ -12,28 +12,32 @@ import (
 )
 
 type SystemInfo struct {
-	DeviceID      string    `json:"device_id"`
-	CPUModel      string    `json:"cpu_model"`
-	CPUCores      int       `json:"cpu_cores"`
-	RAMTotalBytes uint64    `json:"ram_total_bytes"`
-	DiskTotalBytes uint64   `json:"disk_total_bytes"`
-	OSVersion     string    `json:"os_version"`
-	KernelVersion string    `json:"kernel_version"`
-	Arch          string    `json:"arch"`
-	IPAddress     string    `json:"ip_address"`
-	MACAddress    string    `json:"mac_address"`
-	Timezone      string    `json:"timezone"`
-	AgentVersion  string    `json:"agent_version"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	DeviceID       string    `json:"device_id"`
+	CPUModel       string    `json:"cpu_model"`
+	CPUCores       int       `json:"cpu_cores"`
+	RAMTotalBytes  uint64    `json:"ram_total_bytes"`
+	DiskTotalBytes uint64    `json:"disk_total_bytes"`
+	OSVersion      string    `json:"os_version"`
+	KernelVersion  string    `json:"kernel_version"`
+	Arch           string    `json:"arch"`
+	IPAddress      string    `json:"ip_address"`
+	MACAddress     string    `json:"mac_address"`
+	Timezone       string    `json:"timezone"`
+	AgentVersion   string    `json:"agent_version"`
+	PublicIP       string    `json:"public_ip,omitempty"`
+	NetworkName    string    `json:"network_name,omitempty"`
+	UptimeSeconds  uint64    `json:"uptime_seconds,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func Collect(deviceID, agentVersion string) *SystemInfo {
 	info := &SystemInfo{
-		DeviceID:     deviceID,
-		Arch:         runtime.GOARCH,
-		AgentVersion: agentVersion,
-		UpdatedAt:    time.Now().UTC(),
-		Timezone:     time.Now().Location().String(),
+		DeviceID:      deviceID,
+		Arch:          runtime.GOARCH,
+		AgentVersion:  agentVersion,
+		UpdatedAt:     time.Now().UTC(),
+		Timezone:      time.Now().Location().String(),
+		UptimeSeconds: getUptimeSeconds(),
 	}
 
 	info.CPUCores = runtime.NumCPU()
@@ -42,7 +46,7 @@ func Collect(deviceID, agentVersion string) *SystemInfo {
 	info.DiskTotalBytes = getDiskTotal()
 	info.OSVersion = getOSVersion()
 	info.KernelVersion = getKernelVersion()
-	info.IPAddress, info.MACAddress = getNetworkInfo()
+	info.IPAddress, info.MACAddress, info.NetworkName = getNetworkInfoWithIface()
 
 	return info
 }
@@ -127,12 +131,12 @@ func getKernelVersion() string {
 	return strings.TrimSpace(string(data))
 }
 
-func getNetworkInfo() (string, string) {
+func getNetworkInfoWithIface() (string, string, string) {
 	var ipAddr, macAddr string
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return "127.0.0.1", ""
+		return "127.0.0.1", "", "lo"
 	}
 
 	for _, iface := range interfaces {
@@ -159,10 +163,25 @@ func getNetworkInfo() (string, string) {
 			if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
 				ipAddr = ip.String()
 				macAddr = iface.HardwareAddr.String()
-				return ipAddr, macAddr
+				return ipAddr, macAddr, iface.Name
 			}
 		}
 	}
 
-	return "127.0.0.1", ""
+	return "127.0.0.1", "", "lo"
+}
+
+func getUptimeSeconds() uint64 {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) > 0 {
+		upFloat, err := strconv.ParseFloat(fields[0], 64)
+		if err == nil {
+			return uint64(upFloat)
+		}
+	}
+	return 0
 }
