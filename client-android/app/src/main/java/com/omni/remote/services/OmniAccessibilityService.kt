@@ -2,14 +2,19 @@ package com.omni.remote.services
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
+import android.util.Base64
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.google.gson.Gson
 import com.omni.remote.data.models.Command
+import java.io.ByteArrayOutputStream
 
 class OmniAccessibilityService : AccessibilityService() {
 
@@ -69,6 +74,10 @@ class OmniAccessibilityService : AccessibilityService() {
 
             "get_tree", "gui_window" -> {
                 performGetTree(callback)
+            }
+
+            "screenshot", "gui_screenshot" -> {
+                performScreenshot(callback)
             }
 
             else -> {
@@ -227,6 +236,60 @@ class OmniAccessibilityService : AccessibilityService() {
             ),
             "children" to children
         )
+    }
+
+    private fun performScreenshot(callback: (Int, String, String?) -> Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshotResult: ScreenshotResult) {
+                        try {
+                            val hwBuffer = screenshotResult.hardwareBuffer
+                            val colorSpace = screenshotResult.colorSpace
+                            val bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                            hwBuffer.close()
+
+                            if (bitmap != null) {
+                                val softwareBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                bitmap.recycle()
+                                val stream = ByteArrayOutputStream()
+                                softwareBitmap.compress(Bitmap.CompressFormat.PNG, 90, stream)
+                                softwareBitmap.recycle()
+                                val base64Str = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                                callback(0, base64Str, null)
+                                return
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error encoding accessibility screenshot: ${e.message}")
+                        }
+                        // Fallback a Shizuku si falla la conversión de hardwareBuffer
+                        captureWithShizuku(callback)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.w(TAG, "Accessibility takeScreenshot failed with code $errorCode, attempting Shizuku fallback...")
+                        captureWithShizuku(callback)
+                    }
+                }
+            )
+        } else {
+            captureWithShizuku(callback)
+        }
+    }
+
+    fun captureWithShizuku(callback: (Int, String, String?) -> Unit) {
+        if (ShizukuManager.hasPermission()) {
+            val cmd = "screencap -p /data/local/tmp/omni_screen.png && base64 /data/local/tmp/omni_screen.png && rm -f /data/local/tmp/omni_screen.png"
+            val result = ShizukuManager.exec(cmd)
+            if (result.success && result.stdout.isNotEmpty()) {
+                val cleanBase64 = result.stdout.replace("\n", "").replace("\r", "").trim()
+                callback(0, cleanBase64, null)
+                return
+            }
+        }
+        callback(1, "", "Screenshot failed: Requires Android 11+ AccessibilityService or Shizuku permission")
     }
 
     companion object {

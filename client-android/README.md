@@ -57,9 +57,13 @@ Cliente nativo para dispositivos Android diseñado con arquitectura de ultra baj
    - Cuando se requiere interacción en vivo, el servidor envía un mensaje Push FCM con payload `action: "START_CONTROL"`.
    - El servicio solicita un `WakeLock` temporal para encender la pantalla si está apagada y ordena al gestor de sesión conectarse al WebSocket.
 
-3. **Control y Ejecución (`OmniAccessibilityService`)**:
+3. **Control, Ejecución y Captura de Pantalla (`OmniAccessibilityService`)**:
    - Utiliza la API nativa de accesibilidad de Android (`dispatchGesture`) para inyectar toques de precisión, arrastres y deslizamientos (`swipe`).
    - Permite ingresar texto (`ACTION_SET_TEXT`), disparar acciones globales del sistema (`Back`, `Home`, `Recents`, `Notifications`) e inspeccionar el árbol visual (`get_tree`).
+   - **Capturas de pantalla a demanda (`gui_screenshot`)**:
+     - En **Android 11+ (API 30+)**: utiliza la API nativa `AccessibilityService.takeScreenshot()` para capturar la pantalla por hardware buffer y codificarla en PNG base64 sin solicitar confirmaciones emergentes.
+     - En versiones anteriores o en caso de fallo: fallback automático mediante **Shizuku** (`screencap -p`).
+     - Compatible con el endpoint unificado `GET /api/v1/devices/{id}/screenshot` y la herramienta MCP `get_device_screenshot`.
 
 4. **Watchdog de Inactividad (60 Segundos)**:
    - Mientras la sesión está activa, cada comando o evento reinicia un temporizador de 60 segundos.

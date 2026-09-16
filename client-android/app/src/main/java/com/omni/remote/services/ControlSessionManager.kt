@@ -206,6 +206,27 @@ class ControlSessionManager private constructor(private val context: Context) {
                 return true
             }
 
+            "screenshot", "gui_screenshot" -> {
+                val service = OmniAccessibilityService.instance
+                if (service != null) {
+                    service.executeCommand(command) { exitCode, output, error ->
+                        sendResponse(commandId, exitCode, output, error)
+                    }
+                } else if (ShizukuManager.hasPermission()) {
+                    val cmd = "screencap -p /data/local/tmp/omni_screen.png && base64 /data/local/tmp/omni_screen.png && rm -f /data/local/tmp/omni_screen.png"
+                    val result = ShizukuManager.exec(cmd)
+                    if (result.success && result.stdout.isNotEmpty()) {
+                        val cleanBase64 = result.stdout.replace("\n", "").replace("\r", "").trim()
+                        sendResponse(commandId, 0, cleanBase64, null)
+                    } else {
+                        sendResponse(commandId, 1, "", "Shizuku screencap failed: ${result.describe()}")
+                    }
+                } else {
+                    sendResponse(commandId, 1, "", "Screenshot failed: Accessibility service is not enabled and Shizuku has no permission")
+                }
+                return true
+            }
+
             "get_notifications" -> {
                 val limit = (command.payload["limit"] as? Number)?.toInt() ?: 50
                 val listener = OmniNotificationListenerService.instance

@@ -305,15 +305,7 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 
 	case "screenshot":
 		if r.Method == http.MethodGet {
-			cmd := &models.Command{
-				ID:        uuid.New().String(),
-				DeviceID:  deviceID,
-				Type:      "gui_screenshot",
-				Payload:   map[string]interface{}{},
-				CreatedAt: time.Now(),
-			}
-
-			executedCmd, err := s.hub.SendCommand(cmd, 15*time.Second)
+			output, err := s.executeDeviceCommand(deviceID, "gui_screenshot", map[string]interface{}{})
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, map[string]interface{}{
 					"error": err.Error(),
@@ -321,21 +313,17 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			if executedCmd.ExitCode != 0 || executedCmd.Output == "" {
-				errMsg := executedCmd.Error
-				if errMsg == "" {
-					errMsg = "screenshot output was empty"
-				}
+			if output == "" {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
-					"error": "Failed to capture screenshot: " + errMsg,
+					"error": "Failed to capture screenshot: output was empty",
 				})
 				return
 			}
 
-			imgBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(executedCmd.Output))
+			imgBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(output))
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
-					"error": "Failed to decode screenshot base64 image",
+					"error": "Failed to decode screenshot base64 image: " + err.Error(),
 				})
 				return
 			}
@@ -1020,24 +1008,16 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 
 	case "get_device_screenshot":
 		deviceID, _ := req.Arguments["device_id"].(string)
-		cmd := &models.Command{
-			ID:        uuid.New().String(),
-			DeviceID:  deviceID,
-			Type:      "gui_screenshot",
-			Payload:   map[string]interface{}{},
-			CreatedAt: time.Now(),
-		}
-
-		res, err := s.hub.SendCommand(cmd, 15*time.Second)
+		output, err := s.executeDeviceCommand(deviceID, "gui_screenshot", map[string]interface{}{})
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error(), "result": res})
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"result": map[string]interface{}{
 				"device_id":    deviceID,
 				"format":       "png",
-				"image_base64": res.Output,
+				"image_base64": output,
 			},
 		})
 

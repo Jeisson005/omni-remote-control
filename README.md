@@ -239,7 +239,7 @@ curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
 
 ### 7. Captura de Pantalla a Demanda (Screenshots)
 
-Obtén una captura en tiempo real de la pantalla del cliente (Linux o Windows) directamente como imagen PNG:
+Obtén una captura en tiempo real de la pantalla del cliente (Linux, Windows o Android) directamente como imagen PNG:
 
 * **Descargar o ver imagen PNG directamente:**
 ```bash
