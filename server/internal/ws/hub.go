@@ -180,6 +180,12 @@ func (h *Hub) handleMessage(devConn *DeviceConn, msg *models.WSMessage) {
 
 		_ = h.db.UpdateCommand(&cmd)
 
+		// Recuperar el comando completo con payload original y timestamps
+		fullCmd, err := h.db.GetCommand(cmd.ID)
+		if err == nil && fullCmd != nil {
+			cmd = *fullCmd
+		}
+
 		h.cmdMu.Lock()
 		if ch, exists := h.pendingCommands[cmd.ID]; exists {
 			select {

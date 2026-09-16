@@ -71,18 +71,30 @@ Para garantizar un monitoreo integral sin saturar la red ni la base de datos, la
 ```text
 omni-remote-control/
 ├── clients/
-│   └── linux/
-│       ├── cmd/agent/main.go          # Punto de entrada del agente Linux
+│   ├── linux/                         # Agente para Linux (X11 / Headless)
+│   │   ├── cmd/agent/main.go          # Punto de entrada del agente Linux
+│   │   ├── internal/
+│   │   │   ├── config/                # Configuración y persistencia de Device ID
+│   │   │   ├── sysinfo/               # Telemetría estática (CPU, RAM, kernel, red)
+│   │   │   ├── metrics/               # Telemetría dinámica (CPU%, RAM%, ventanas, procesos)
+│   │   │   ├── executor/              # Ejecutor seguro de comandos shell
+│   │   │   ├── gui/                   # Controlador GUI (xdotool y wmctrl)
+│   │   │   └── connection/            # Cliente WebSocket y reconexión automática
+│   │   ├── install.sh                 # Instalador idempotente (Debian, Ubuntu, Fedora, Arch)
+│   │   ├── Dockerfile.test            # Entorno de pruebas con Xvfb, Openbox y xterm
+│   │   └── entrypoint-test.sh         # Script de inicio para entorno X11 virtual
+│   │
+│   └── windows/                       # Agente para Windows (Win32 nativo)
+│       ├── cmd/agent/main.go          # Punto de entrada del agente Windows
 │       ├── internal/
-│       │   ├── config/                # Gestión de configuración y persistencia de Device ID
-│       │   ├── sysinfo/               # Telemetría estática (CPU, RAM, kernel, red)
-│       │   ├── metrics/               # Telemetría dinámica (CPU%, RAM%, ventanas, procesos)
-│       │   ├── executor/              # Ejecutor seguro de comandos shell
-│       │   ├── gui/                   # Controlador GUI (xdotool y wmctrl)
-│       │   └── connection/            # Cliente WebSocket y reconexión automática
-│       ├── install.sh                 # Instalador idempotente (Debian, Ubuntu, Fedora, Arch)
-│       ├── Dockerfile.test            # Entorno de pruebas con Xvfb, Openbox y xterm
-│       └── entrypoint-test.sh         # Script de inicio para entorno X11 virtual
+│       │   ├── config/                # Configuración y persistencia en ProgramData
+│       │   ├── sysinfo/               # Telemetría estática vía Win32 API
+│       │   ├── metrics/               # Telemetría dinámica (GetSystemTimes, EnumWindows, tasklist)
+│       │   ├── executor/              # Ejecución de PowerShell y cmd.exe
+│       │   ├── win32/                 # Wrappers nativos de user32.dll y kernel32.dll (sin CGO)
+│       │   ├── gui/                   # Control GUI (cursor, clics, unicode typing, ventanas)
+│       │   └── connection/            # Conexión WebSocket al servidor
+│       └── install.ps1                # Instalador idempotente en PowerShell (Scheduled Task)
 │
 ├── server/
 │   ├── cmd/server/main.go             # Punto de entrada del servidor Go
@@ -210,3 +222,27 @@ El instalador:
 3. Crea directorios en `/etc/omni-agent` y `/var/lib/omni-agent`.
 4. Genera y preserva un identificador de hardware único para el dispositivo.
 5. Configura e inicia el servicio en `systemd` (`omni-agent.service`).
+
+---
+
+## 🪟 Instalación del Agente en Windows (Idempotente)
+
+El agente de Windows está desarrollado en Go utilizando llamadas nativas a la API Win32 (`user32.dll` y `kernel32.dll`), por lo que **no requiere dependencias CGO ni runtimes externos**.
+
+### 1. Compilación Cruzada (desde Linux / CI/CD):
+```bash
+cd clients/windows
+GOOS=windows GOARCH=amd64 go build -ldflags="-w -s" -o omni-agent.exe cmd/agent/main.go
+```
+
+### 2. Instalación con PowerShell (como Administrador):
+```powershell
+# Ejecutar en PowerShell con permisos de Administrador:
+.\clients\windows\install.ps1 -ServerUrl "ws://<IP_SERVIDOR>:8090/ws/devices"
+```
+
+El instalador en PowerShell:
+1. Crea los directorios en `C:\Program Files\OmniAgent` y `C:\ProgramData\OmniAgent`.
+2. Genera y guarda un `device-id` único a partir del UUID de la BIOS/Motherboard.
+3. Copia el binario `omni-agent.exe`.
+4. Registra e inicia una Tarea Programada de Windows (`Scheduled Task`) para arranque automático en segundo plano con privilegios máximos del sistema.

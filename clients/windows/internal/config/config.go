@@ -10,12 +10,12 @@ import (
 )
 
 type Config struct {
-	ServerURL             string        `json:"server_url"`
-	DeviceID              string        `json:"device_id"`
-	DeviceName            string        `json:"device_name"`
-	HeartbeatInterval     time.Duration `json:"heartbeat_interval"`
-	MetricsInterval       time.Duration `json:"metrics_interval"`
-	AgentVersion          string        `json:"agent_version"`
+	ServerURL         string        `json:"server_url"`
+	DeviceID          string        `json:"device_id"`
+	DeviceName        string        `json:"device_name"`
+	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
+	MetricsInterval   time.Duration `json:"metrics_interval"`
+	AgentVersion      string        `json:"agent_version"`
 }
 
 func LoadConfig() *Config {
@@ -32,14 +32,14 @@ func LoadConfig() *Config {
 
 	deviceID := getOrCreateDeviceID()
 
-	heartbeatSec := 24 * 3600 // 24 hours
+	heartbeatSec := 86400 // 24 hours
 	if s := os.Getenv("OMNI_HEARTBEAT_SECONDS"); s != "" {
 		if d, err := time.ParseDuration(s + "s"); err == nil {
 			heartbeatSec = int(d.Seconds())
 		}
 	}
 
-	metricsSec := 120 // 2 minutes by default
+	metricsSec := 120 // 2 minutes
 	if s := os.Getenv("OMNI_METRICS_SECONDS"); s != "" {
 		if d, err := time.ParseDuration(s + "s"); err == nil {
 			metricsSec = int(d.Seconds())
@@ -61,40 +61,34 @@ func getOrCreateDeviceID() string {
 		return id
 	}
 
-	// Paths to check for saved machine ID
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		programData = `C:\ProgramData`
+	}
+
 	paths := []string{
-		"/etc/omni-agent/device-id",
-		"/var/lib/omni-agent/device-id",
-		"/etc/machine-id",
-		"./.omni-device-id",
+		filepath.Join(programData, "OmniAgent", "device-id"),
+		filepath.Join(".", ".omni-device-id"),
 	}
 
 	for _, p := range paths {
 		if data, err := os.ReadFile(p); err == nil {
 			id := strings.TrimSpace(string(data))
 			if len(id) >= 8 {
-				if strings.HasPrefix(id, "linux-") {
-					return id
-				}
-				return "linux-" + id[:min(len(id), 32)]
+				return id
 			}
 		}
 	}
 
-	// Generate a random ID and attempt to persist in ./.omni-device-id
+	// Generar nuevo ID
 	buf := make([]byte, 16)
 	_, _ = rand.Read(buf)
-	generatedID := "linux-" + hex.EncodeToString(buf)
+	generatedID := "windows-" + hex.EncodeToString(buf)
 
-	_ = os.MkdirAll(filepath.Dir("./.omni-device-id"), 0755)
-	_ = os.WriteFile("./.omni-device-id", []byte(generatedID), 0644)
+	targetDir := filepath.Join(programData, "OmniAgent")
+	_ = os.MkdirAll(targetDir, 0755)
+	_ = os.WriteFile(filepath.Join(targetDir, "device-id"), []byte(generatedID), 0644)
+	_ = os.WriteFile(".omni-device-id", []byte(generatedID), 0644)
 
 	return generatedID
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
