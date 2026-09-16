@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -178,6 +179,51 @@ func (s *Server) handleDeviceSubroutes(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 
+	case "screenshot":
+		if r.Method == http.MethodGet {
+			cmd := &models.Command{
+				ID:        uuid.New().String(),
+				DeviceID:  deviceID,
+				Type:      "gui_screenshot",
+				Payload:   map[string]interface{}{},
+				CreatedAt: time.Now(),
+			}
+
+			executedCmd, err := s.hub.SendCommand(cmd, 15*time.Second)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+					"error": err.Error(),
+				})
+				return
+			}
+
+			if executedCmd.ExitCode != 0 || executedCmd.Output == "" {
+				errMsg := executedCmd.Error
+				if errMsg == "" {
+					errMsg = "screenshot output was empty"
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"error": "Failed to capture screenshot: " + errMsg,
+				})
+				return
+			}
+
+			imgBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(executedCmd.Output))
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"error": "Failed to decode screenshot base64 image",
+				})
+				return
+			}
+
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Length", strconv.Itoa(len(imgBytes)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(imgBytes)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 	default:
 		http.NotFound(w, r)
 	}
@@ -255,6 +301,17 @@ func (s *Server) handleMCPTools(w http.ResponseWriter, r *http.Request) {
 					"window_id": map[string]interface{}{"type": "string", "description": "ID o título de ventana"},
 				},
 				"required": []string{"device_id", "action"},
+			},
+		},
+		{
+			"name":        "get_device_screenshot",
+			"description": "Captura en tiempo real la pantalla del dispositivo cliente y retorna la imagen codificada en base64 (PNG).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"device_id": map[string]interface{}{"type": "string", "description": "ID del dispositivo"},
+				},
+				"required": []string{"device_id"},
 			},
 		},
 	}
@@ -347,6 +404,29 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"result": res})
+
+	case "get_device_screenshot":
+		deviceID, _ := req.Arguments["device_id"].(string)
+		cmd := &models.Command{
+			ID:        uuid.New().String(),
+			DeviceID:  deviceID,
+			Type:      "gui_screenshot",
+			Payload:   map[string]interface{}{},
+			CreatedAt: time.Now(),
+		}
+
+		res, err := s.hub.SendCommand(cmd, 15*time.Second)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error(), "result": res})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"result": map[string]interface{}{
+				"device_id":    deviceID,
+				"format":       "png",
+				"image_base64": res.Output,
+			},
+		})
 
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Unknown tool"})

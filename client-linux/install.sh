@@ -49,17 +49,18 @@ install_dependencies() {
             procps \
             xdotool \
             wmctrl \
+            scrot \
             ca-certificates || warn "Algunos paquetes opcionales no pudieron instalarse"
     elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y curl jq procps-ng xdotool wmctrl ca-certificates || true
+        dnf install -y curl jq procps-ng xdotool wmctrl scrot ca-certificates || true
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y curl jq procps-ng xdotool wmctrl ca-certificates || true
+        yum install -y curl jq procps-ng xdotool wmctrl scrot ca-certificates || true
     elif command -v pacman >/dev/null 2>&1; then
-        pacman -Sy --noconfirm curl jq procps-ng xdotool wmctrl ca-certificates || true
+        pacman -Sy --noconfirm curl jq procps-ng xdotool wmctrl scrot ca-certificates || true
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache curl jq procps xdotool wmctrl ca-certificates || true
+        apk add --no-cache curl jq procps xdotool wmctrl scrot ca-certificates || true
     else
-        warn "Gestor de paquetes no reconocido. Asegúrate de tener instalados xdotool y wmctrl."
+        warn "Gestor de paquetes no reconocido. Asegúrate de tener instalados xdotool, wmctrl y scrot."
     fi
 }
 

@@ -1,7 +1,9 @@
 package gui
 
 import (
+	"bytes"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +41,8 @@ func (g *WindowsGUIController) ExecuteGUIAction(action string, payload map[strin
 		return g.handleCloseWindow(payload)
 	case "minimize_window", "gui_minimize_window":
 		return g.handleMinimizeWindow(payload)
+	case "screenshot", "gui_screenshot":
+		return g.handleScreenshot()
 	default:
 		return &ExecutionResult{
 			ExitCode: 1,
@@ -280,4 +284,37 @@ func getInt(payload map[string]interface{}, key string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func (g *WindowsGUIController) handleScreenshot() *ExecutionResult {
+	// Captura de pantalla nativa usando PowerShell y .NET System.Drawing / System.Windows.Forms
+	psScript := `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+$stream = New-Object System.IO.MemoryStream
+$bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+[Convert]::ToBase64String($stream.ToArray())
+`
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return &ExecutionResult{
+			ExitCode: 1,
+			Error:    fmt.Sprintf("failed to capture Windows screenshot: %v - %s", err, stderr.String()),
+		}
+	}
+
+	base64Str := strings.TrimSpace(stdout.String())
+	return &ExecutionResult{
+		ExitCode: 0,
+		Output:   base64Str,
+	}
 }

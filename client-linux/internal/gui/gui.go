@@ -2,6 +2,7 @@ package gui
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,6 +48,8 @@ func (g *GUIController) ExecuteGUIAction(action string, payload map[string]inter
 		return g.handleFocusWindow(payload)
 	case "close_window", "gui_close_window":
 		return g.handleCloseWindow(payload)
+	case "screenshot", "gui_screenshot":
+		return g.handleScreenshot()
 	default:
 		return &executor.ExecutionResult{
 			ExitCode: 1,
@@ -218,4 +221,43 @@ func getInt(payload map[string]interface{}, key string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func (g *GUIController) handleScreenshot() *executor.ExecutionResult {
+	tmpFile := fmt.Sprintf("/tmp/omni_screen_%d.png", os.Getpid())
+	defer os.Remove(tmpFile)
+
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("scrot"); err == nil {
+		cmd = exec.Command("scrot", "-z", "-o", tmpFile)
+	} else if _, err := exec.LookPath("import"); err == nil {
+		cmd = exec.Command("import", "-window", "root", tmpFile)
+	} else {
+		return &executor.ExecutionResult{
+			ExitCode: 1,
+			Error:    "neither scrot nor ImageMagick import is installed for capturing screenshot",
+		}
+	}
+
+	cmd.Env = os.Environ()
+	if err := cmd.Run(); err != nil {
+		return &executor.ExecutionResult{
+			ExitCode: 1,
+			Error:    fmt.Sprintf("failed to capture screenshot: %v", err),
+		}
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return &executor.ExecutionResult{
+			ExitCode: 1,
+			Error:    fmt.Sprintf("failed to read captured screenshot: %v", err),
+		}
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return &executor.ExecutionResult{
+		ExitCode: 0,
+		Output:   encoded,
+	}
 }

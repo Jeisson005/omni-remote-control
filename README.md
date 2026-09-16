@@ -183,6 +183,22 @@ curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
   }' | python3 -m json.tool
 ```
 
+### 5. Captura de Pantalla a Demanda (Screenshots)
+
+Obtén una captura en tiempo real de la pantalla del cliente (Linux o Windows) directamente como imagen PNG:
+
+* **Descargar o ver imagen PNG directamente:**
+```bash
+curl -s "http://localhost:8090/api/v1/devices/<DEVICE_ID>/screenshot" -o pantalla.png
+```
+
+* **Vía comando genérico (retorna base64):**
+```bash
+curl -s -X POST "http://localhost:8090/api/v1/devices/<DEVICE_ID>/commands" \
+  -H "Content-Type: application/json" \
+  -d '{ "type": "gui_screenshot" }' | python3 -m json.tool
+```
+
 ---
 
 ## 🤖 Integración con Model Context Protocol (MCP)
