@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: omni-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: omni
+    ports:
+      - "5435:5432"
+    volumes:
+      - omni_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d omni"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: omni-server
+    restart: unless-stopped
+    environment:
+      PORT: "8090"
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/omni?sslmode=disable"
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  client-linux:
+    build:
+      context: ./clients/linux
+      dockerfile: Dockerfile.test
+    container_name: omni-client-linux
+    restart: unless-stopped
+    environment:
+      OMNI_SERVER_URL: "ws://server:8090/ws/devices"
+      OMNI_DEVICE_NAME: "linux-test-desktop"
+      OMNI_METRICS_SECONDS: "5"
+      DISPLAY: ":99"
+    depends_on:
+      - server
+
+volumes:
+  omni_pgdata:

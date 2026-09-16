@@ -1,0 +1,28 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+omni-server
+omni-agent
+/clients/linux/omni-agent
+/server/omni-server
+
+# Test and coverage
+*.out
+*.test
+
+# Logs and local IDs
+*.log
+.omni-device-id
+/var/lib/omni-agent
+
+# Environment and local configs
+.env
+config.env
+
+# OS and Editor files
+.DS_Store
+.vscode/
+.idea/
